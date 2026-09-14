@@ -1,0 +1,14 @@
+# Không upload lên Vercel — nhạy cảm hoặc không cần cho build
+init docs/
+poc/
+docs/
+tests/
+.gitnexus/
+.env
+.env.*
+/supabase/
+playwright.config.*
+vitest.config.*
+CLAUDE.md
+AGENTS.md
+README.md

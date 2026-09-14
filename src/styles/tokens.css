@@ -1,0 +1,200 @@
+/*
+ * Design tokens — nguồn sự thật: `init docs/README.md` §Design Tokens
+ * + đối chiếu `init docs/Interview Copilot App v2.dc.html`.
+ * Mọi màu trong .tsx PHẢI đi qua token này (cấm hex thô).
+ * Alpha variants: dùng opacity modifier của Tailwind (vd `border-accent/40`).
+ */
+
+:root {
+  /* Nền */
+  --bg-app: #0a0a11;
+  --glow-strong: rgba(124, 77, 255, 0.17); /* radial 85% -12% */
+  --glow-soft: rgba(124, 77, 255, 0.11); /* radial -12% 112% */
+
+  /* Bề mặt */
+  --panel: #14141f;
+  --panel-deep: #0e0e16;
+  --panel-deeper: #101018;
+  --input: #12121c;
+  --input-deep: #0f0f1a;
+  --popover: #17172a;
+  /* Nền mock hộp thoại share Chrome (design dùng #17171f, khác popover). */
+  --panel-dialog-mock: #17171f;
+  --skeleton: #1b1b2e;
+  --skeleton-strong: #20203a;
+  --chip-num: #1c1c2e;
+  --overlay: rgba(4, 4, 10, 0.72);
+  --header-bg: rgba(10, 10, 17, 0.8);
+  --header-bg-live: rgba(10, 10, 17, 0.85);
+
+  /* Viền */
+  --border-divider: #1e1e30;
+  --border-card: #232338;
+  --border-control: #2a2a42;
+  --border-strong: #3a3a55;
+  /* Design dùng riêng cho row câu hỏi màn prep (nhạt hơn divider 1 nấc). */
+  --border-row-subtle: #1a1a2c;
+
+  /* Chữ */
+  --text-primary: #f2f0ff;
+  --text-secondary: #9b99b4;
+  --text-muted: #8e8ca8;
+  --text-faint: #5f5d78;
+  --text-bright: #e6e3fa;
+  --text-brighter: #eae7ff;
+  --text-content: #dcd9f2;
+  --text-soft: #c9c6e4;
+
+  /* Accent tím */
+  --accent: #a855f7;
+  --accent-2: #6d5cff;
+  --accent-link: #a78bfa;
+  --accent-hover: #c4b5fd;
+  --accent-label: #8b5cf6;
+  --accent-glow: #7c4dff;
+  --accent-grad: linear-gradient(135deg, #a855f7, #6d5cff);
+  --accent-grad-h: linear-gradient(90deg, #a855f7, #6d5cff);
+  --danger-grad: linear-gradient(135deg, #ff4d5e, #e5484d);
+  --panel-grad-soft: linear-gradient(
+    160deg,
+    rgba(139, 92, 246, 0.12),
+    rgba(109, 92, 255, 0.04)
+  );
+  --panel-grad-strong: linear-gradient(
+    160deg,
+    rgba(139, 92, 246, 0.14),
+    rgba(109, 92, 255, 0.05) 55%
+  );
+  --bubble-grad-pv: linear-gradient(
+    160deg,
+    rgba(139, 92, 246, 0.16),
+    rgba(109, 92, 255, 0.07)
+  );
+
+  /* Ngữ nghĩa */
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #ff4d5e;
+  --danger-hover: #ff6b7a;
+  --danger-deep: #e5484d;
+
+  /* Focus / selection */
+  --focus-border: #8b5cf6;
+  --focus-ring: 0 0 0 3px rgba(139, 92, 246, 0.18);
+  --selection: rgba(139, 92, 246, 0.4);
+}
+
+@theme inline {
+  /* Màu — class dạng bg-panel / text-muted / border-card / bg-success… */
+  --color-*: initial;
+  --color-app: var(--bg-app);
+  --color-panel: var(--panel);
+  --color-panel-deep: var(--panel-deep);
+  --color-panel-deeper: var(--panel-deeper);
+  --color-input: var(--input);
+  --color-input-deep: var(--input-deep);
+  --color-popover: var(--popover);
+  --color-skeleton: var(--skeleton);
+  --color-skeleton-strong: var(--skeleton-strong);
+  --color-chip-num: var(--chip-num);
+  --color-overlay: var(--overlay);
+  --color-divider: var(--border-divider);
+  --color-row-subtle: var(--border-row-subtle);
+  --color-dialog-mock: var(--panel-dialog-mock);
+  --color-card: var(--border-card);
+  --color-control: var(--border-control);
+  --color-strong: var(--border-strong);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-bright: var(--text-bright);
+  --color-brighter: var(--text-brighter);
+  --color-content: var(--text-content);
+  --color-soft: var(--text-soft);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-link: var(--accent-link);
+  --color-accent-hover: var(--accent-hover);
+  --color-label: var(--accent-label);
+  --color-accent-glow: var(--accent-glow);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-danger-hover: var(--danger-hover);
+  --color-danger-deep: var(--danger-deep);
+  --color-white: #ffffff;
+
+  /* Font — class font-sans / font-jp */
+  --font-sans: var(--font-bvp), var(--font-nsjp), system-ui, sans-serif;
+  --font-jp: var(--font-nsjp), "Noto Sans", sans-serif;
+
+  /* Radius — pill 999 · nút 10–13 · card 14–20 · icon chip 6–13 */
+  --radius-pill: 999px;
+  --radius-btn: 10px;
+  --radius-btn-md: 11px;
+  --radius-btn-lg: 12px;
+  --radius-btn-xl: 13px;
+  --radius-card: 14px;
+  --radius-card-md: 16px;
+  --radius-card-lg: 18px;
+  --radius-card-xl: 20px;
+  --radius-chip: 6px;
+  --radius-chip-md: 7px;
+  --radius-chip-lg: 9px;
+
+  /* Shadow */
+  --shadow-cta: 0 12px 32px rgba(124, 77, 255, 0.38);
+  --shadow-cta-hover: 0 14px 40px rgba(124, 77, 255, 0.55);
+  --shadow-cta-sm: 0 8px 22px rgba(124, 77, 255, 0.35);
+  --shadow-cta-sm-hover: 0 10px 28px rgba(124, 77, 255, 0.55);
+  --shadow-card-float: 0 30px 80px rgba(0, 0, 0, 0.6);
+  --shadow-danger: 0 8px 22px rgba(255, 77, 94, 0.3);
+  --shadow-danger-hover: 0 10px 28px rgba(255, 77, 94, 0.5);
+  --shadow-logo: 0 4px 14px rgba(124, 77, 255, 0.45);
+  --shadow-icon-cta: 0 8px 24px rgba(124, 77, 255, 0.4);
+  --shadow-toast:
+    0 10px 30px rgba(0, 0, 0, 0.5), 0 0 20px rgba(124, 77, 255, 0.25);
+  --shadow-pill-float:
+    0 8px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(124, 77, 255, 0.2);
+  --shadow-wait-card:
+    0 30px 80px rgba(0, 0, 0, 0.5), 0 0 60px rgba(124, 77, 255, 0.12);
+  --shadow-mode-hover: 0 16px 44px rgba(124, 77, 255, 0.2);
+  --shadow-dialog-mock: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --shadow-menu: 0 20px 50px rgba(0, 0, 0, 0.6);
+
+  /* Animation — pulse REC (duy nhất; design không dùng transition trang trí) */
+  --animate-rec-pulse: rec-pulse 2.2s ease-out infinite;
+
+  @keyframes rec-pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(255, 77, 94, 0.5);
+    }
+    70% {
+      box-shadow: 0 0 0 9px rgba(255, 77, 94, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(255, 77, 94, 0);
+    }
+  }
+}
+
+/* Gradient utilities — gradient không biểu diễn được bằng --color-* */
+@utility bg-accent-grad {
+  background-image: var(--accent-grad);
+}
+@utility bg-accent-grad-h {
+  background-image: var(--accent-grad-h);
+}
+@utility bg-danger-grad {
+  background-image: var(--danger-grad);
+}
+@utility bg-panel-grad-soft {
+  background: var(--panel-grad-soft), var(--panel);
+}
+@utility bg-panel-grad-strong {
+  background: var(--panel-grad-strong), var(--panel);
+}
+@utility bg-bubble-pv {
+  background: var(--bubble-grad-pv), var(--panel);
+}

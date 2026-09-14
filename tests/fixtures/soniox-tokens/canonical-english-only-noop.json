@@ -1,0 +1,16 @@
+{
+  "connection": "canonical",
+  "note": "two_way ja<->vi is a documented no-op when the speaker's lang is en: text_orig transcribes correctly (lang/speaker/timestamps all correct) but NO translation tokens are emitted — translated stays null (docs/soniox-integration-notes.md #Translation two_way(ja,vi) gặp tiếng Anh, verified 3/3 en-only runs in the POC).",
+  "config": { "translation": { "type": "two_way", "language_a": "ja", "language_b": "vi" } },
+  "messages": [
+    {
+      "tokens": [
+        { "text": "I have five years of experience", "confidence": 0.94, "is_final": true, "speaker": "2", "language": "en", "start_ms": 0, "end_ms": 1450, "translation_status": "none" },
+        { "text": " in backend development", "confidence": 0.93, "is_final": true, "speaker": "2", "language": "en", "start_ms": 1450, "end_ms": 2300, "translation_status": "none" },
+        { "text": "<end>", "is_final": true, "confidence": 1 }
+      ],
+      "final_audio_proc_ms": 2300,
+      "total_audio_proc_ms": 2300
+    }
+  ]
+}

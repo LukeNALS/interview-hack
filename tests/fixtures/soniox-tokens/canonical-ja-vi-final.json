@@ -1,0 +1,19 @@
+{
+  "connection": "canonical",
+  "note": "two_way ja<->vi final result — format follows the real Soniox realtime API (RealtimeToken/RealtimeResult) verified in poc/soniox-2conn/src/types.ts. <end> token = enable_endpoint_detection boundary, the ONLY authoritative utterance cut (docs/soniox-integration-notes.md).",
+  "config": { "translation": { "type": "two_way", "language_a": "ja", "language_b": "vi" } },
+  "messages": [
+    {
+      "tokens": [
+        { "text": "こんにちは", "confidence": 0.98, "is_final": true, "speaker": "1", "language": "ja", "start_ms": 120, "end_ms": 640, "translation_status": "original" },
+        { "text": "、自己紹介", "confidence": 0.97, "is_final": true, "speaker": "1", "language": "ja", "start_ms": 640, "end_ms": 1200, "translation_status": "original" },
+        { "text": "をお願いします", "confidence": 0.96, "is_final": true, "speaker": "1", "language": "ja", "start_ms": 1200, "end_ms": 1980, "translation_status": "original" },
+        { "text": "Xin chào", "confidence": 0.9, "is_final": true, "speaker": "1", "language": "ja", "translation_status": "translation" },
+        { "text": ", hãy tự giới thiệu bản thân", "confidence": 0.88, "is_final": true, "speaker": "1", "language": "ja", "translation_status": "translation" },
+        { "text": "<end>", "is_final": true, "confidence": 1 }
+      ],
+      "final_audio_proc_ms": 1980,
+      "total_audio_proc_ms": 1980
+    }
+  ]
+}

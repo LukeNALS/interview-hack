@@ -1,0 +1,46 @@
+@import "tailwindcss";
+@import "../styles/tokens.css";
+
+/*
+ * Nền app + focus/selection theo design (`init docs/README.md` §Design Tokens).
+ * Design KHÔNG dùng transition — trạng thái đổi tức thì, trừ pulse REC
+ * (--animate-rec-pulse trong tokens.css, component tự thêm motion-reduce:animate-none).
+ */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(
+      1100px 620px at 85% -12%,
+      var(--glow-strong),
+      transparent 62%
+    ),
+    radial-gradient(900px 560px at -12% 112%, var(--glow-soft), transparent 60%),
+    var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent-link);
+}
+a:hover {
+  color: var(--accent-hover);
+}
+
+::selection {
+  background: var(--selection);
+}
+
+textarea:focus,
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--focus-border) !important;
+  box-shadow: var(--focus-ring);
+}

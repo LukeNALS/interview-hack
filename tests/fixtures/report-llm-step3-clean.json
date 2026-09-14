@@ -1,0 +1,20 @@
+{
+  "scorecard": [
+    { "key": "technical_depth", "score": 4, "warn": false, "labels": { "vi": "Chuyên môn kỹ thuật", "ja": "技術力", "en": "Technical depth" } },
+    { "key": "communication", "score": 3, "warn": false, "labels": { "vi": "Giao tiếp", "ja": "コミュニケーション", "en": "Communication" } },
+    { "key": "experience", "score": 4, "warn": false, "labels": { "vi": "Kinh nghiệm", "ja": "経験", "en": "Experience" } },
+    { "key": "attitude", "score": 3, "warn": false, "labels": { "vi": "Thái độ", "ja": "態度", "en": "Attitude" } },
+    { "key": "jd_fit", "score": 3, "warn": true, "labels": { "vi": "Khớp JD", "ja": "JDとの一致度", "en": "JD fit" } }
+  ],
+  "strengths": [
+    { "vi": "Trả lời rõ ràng câu hỏi kỹ thuật", "ja": "技術的な質問に明確に回答した", "en": "Answered the technical question clearly" }
+  ],
+  "cautions": [],
+  "evidence": [
+    {
+      "claim": { "vi": "Có kinh nghiệm Node.js", "ja": "Node.jsの経験がある", "en": "Has Node.js experience" },
+      "quote": "Tôi có 3 năm kinh nghiệm.",
+      "utterance_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    }
+  ]
+}

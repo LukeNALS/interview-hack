@@ -1,0 +1,117 @@
+name: CI
+
+# PR gate = check + db (nhanh, chặn merge). E2E chạy nightly vì cần Playwright
+# browser + full app stack — plan phase-07 step 13.
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+  schedule:
+    # 18:00 UTC = 03:00 JST — sau cron retention 17:00 UTC, trước giờ làm.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Suite mặc định không gọi service ngoài; biến nào thiếu thì test tự describe.skip.
+  CI: "true"
+
+jobs:
+  check:
+    name: typecheck · lint · secrets · unit+integration
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check:secrets quét file tracked; gitleaks-style history không cần ở đây.
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Chạy secret gate TRƯỚC: hỏng cái này thì các bước sau vô nghĩa.
+      - run: pnpm check:secrets
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+
+      # `pnpm build` PHẢI có trong gate: P06+P07 để lọt lỗi Turbopack từ chối
+      # `react-dom/server` trong App Route (app không deploy được) suốt 2 phase,
+      # vì typecheck/lint/vitest đều KHÔNG chạy production build. Đừng gỡ bước này.
+      - run: pnpm build
+
+  db:
+    name: DB-backed (retention · sweeper · RLS matrix)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Dựng DB thuần từ supabase/migrations — chính vì vậy nó bắt được lỗi
+      # kiểu "service_role thiếu GRANT" mà project prod (tạo thời auto-expose
+      # legacy) không lộ ra. Đừng thay bằng snapshot dump.
+      - name: Start local Supabase stack
+        run: supabase start
+
+      # test:db tự đọc key từ `supabase status -o json` — không key nào trong repo.
+      - run: pnpm test:db
+
+      - name: Stop stack
+        if: always()
+        run: supabase stop
+
+  e2e:
+    name: E2E Playwright (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start local Supabase stack
+        run: supabase start
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # Soniox + Claude được mock trong tests/mocks — E2E KHÔNG đốt phút Soniox
+      # thật, không gọi Anthropic thật (plan Key Insight #6).
+      - run: pnpm test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Stop stack
+        if: always()
+        run: supabase stop

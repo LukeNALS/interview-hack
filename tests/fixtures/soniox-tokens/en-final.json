@@ -1,0 +1,19 @@
+{
+  "connection": "en",
+  "note": "one_way->en final result, same utterance as canonical-ja-vi-final.json (matched by IoU in align.ts). Timestamps deliberately identical to the canonical fixture — real POC data showed median |delta_start_ms|=0ms, p95=60ms.",
+  "config": { "translation": { "type": "one_way", "target_language": "en" } },
+  "messages": [
+    {
+      "tokens": [
+        { "text": "こんにちは", "confidence": 0.98, "is_final": true, "speaker": "1", "language": "ja", "start_ms": 120, "end_ms": 640, "translation_status": "original" },
+        { "text": "、自己紹介", "confidence": 0.97, "is_final": true, "speaker": "1", "language": "ja", "start_ms": 640, "end_ms": 1200, "translation_status": "original" },
+        { "text": "をお願いします", "confidence": 0.96, "is_final": true, "speaker": "1", "language": "ja", "start_ms": 1200, "end_ms": 1980, "translation_status": "original" },
+        { "text": "Hello", "confidence": 0.91, "is_final": true, "speaker": "1", "language": "ja", "translation_status": "translation" },
+        { "text": ", please introduce yourself", "confidence": 0.89, "is_final": true, "speaker": "1", "language": "ja", "translation_status": "translation" },
+        { "text": "<end>", "is_final": true, "confidence": 1 }
+      ],
+      "final_audio_proc_ms": 1980,
+      "total_audio_proc_ms": 1980
+    }
+  ]
+}
