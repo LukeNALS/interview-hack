@@ -15,6 +15,8 @@ export interface LocalSupabase {
   url: string;
   anonKey: string;
   serviceKey: string;
+  /** Mailpit (tên cũ "Inbucket" — Supabase CLI mới vẫn expose cả 2 key, cùng 1 service). */
+  mailpitUrl: string;
 }
 
 /** Cổng cố định cho E2E — tách khỏi `next dev` mặc định (3000) để chạy song song với dev thật. */
@@ -38,7 +40,7 @@ export function readLocalSupabase(): LocalSupabase {
     throw new Error("E2E: không đọc được `supabase status`. Local stack chưa chạy? → `supabase start`");
   }
 
-  const { API_URL, ANON_KEY, SERVICE_ROLE_KEY } = status;
+  const { API_URL, ANON_KEY, SERVICE_ROLE_KEY, MAILPIT_URL, INBUCKET_URL } = status;
   if (!API_URL || !ANON_KEY || !SERVICE_ROLE_KEY) {
     throw new Error("E2E: `supabase status` thiếu API_URL/ANON_KEY/SERVICE_ROLE_KEY — stack chưa lên đủ.");
   }
@@ -48,6 +50,11 @@ export function readLocalSupabase(): LocalSupabase {
     throw new Error(`E2E: API_URL trỏ "${host}", không phải localhost. Suite này ghi/xoá dữ liệu — từ chối chạy.`);
   }
 
-  cached = { url: API_URL, anonKey: ANON_KEY, serviceKey: SERVICE_ROLE_KEY };
+  const mailpitUrl = MAILPIT_URL ?? INBUCKET_URL;
+  if (!mailpitUrl) {
+    throw new Error("E2E: `supabase status` thiếu MAILPIT_URL/INBUCKET_URL — không đọc được mail server local.");
+  }
+
+  cached = { url: API_URL, anonKey: ANON_KEY, serviceKey: SERVICE_ROLE_KEY, mailpitUrl };
   return cached;
 }
