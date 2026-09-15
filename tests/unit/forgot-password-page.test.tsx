@@ -34,6 +34,21 @@ test("test_forgot_password_submit_success_shows_neutral_message", async () => {
   expect(resetMock).toHaveBeenCalledWith("real-user@example.com");
 });
 
+test("test_forgot_password_submit_success_tells_user_only_latest_email_link_works", async () => {
+  // Arrange — yêu cầu lần N huỷ link của mọi mail trước; Gmail lại gộp chúng 1 thread
+  resetMock.mockResolvedValue({ data: {}, error: null });
+
+  // Act
+  await submit("real-user@example.com");
+
+  // Assert
+  await waitFor(() =>
+    expect(
+      screen.getByText("Hãy mở email mới nhất — các đường dẫn cũ sẽ không còn dùng được."),
+    ).toBeInTheDocument(),
+  );
+});
+
 test("test_forgot_password_user_not_found_still_shows_neutral_message", async () => {
   // Arrange — GoTrue vẫn có thể trả lỗi "user not found" tuỳ version; UI KHÔNG được lộ nó
   resetMock.mockResolvedValue({

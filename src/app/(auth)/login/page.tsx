@@ -4,8 +4,7 @@ import { Suspense, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
-
-const LINK_INVALID_MESSAGE = "Đường dẫn không hợp lệ hoặc đã hết hạn. Hãy yêu cầu lại.";
+import { LINK_INVALID_MESSAGE, RESEND_RESET_EMAIL_LABEL } from "@/lib/password-reset-user-facing-messages";
 
 // Màn login tối giản (token màu chính — UI chi tiết hoàn thiện ở P03).
 function LoginForm() {
@@ -13,6 +12,7 @@ function LoginForm() {
   // useSearchParams cần bọc Suspense (Next 16) — đọc ?error=link_invalid từ /auth/confirm.
   const searchParams = useSearchParams();
   const linkInvalid = searchParams.get("error") === "link_invalid";
+  const isRecoveryLink = searchParams.get("type") === "recovery";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +41,19 @@ function LoginForm() {
       >
         <h1 className="mb-6 text-xl font-semibold">Đăng nhập Interview Hack</h1>
 
-        {linkInvalid && <p className="mb-4 text-sm text-red-400">{LINK_INVALID_MESSAGE}</p>}
+        {linkInvalid && (
+          <div className="mb-4 rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm">
+            <p className="text-red-400">{LINK_INVALID_MESSAGE}</p>
+            {isRecoveryLink && (
+              <Link
+                href="/forgot-password"
+                className="mt-3 inline-block rounded-lg border border-[#a855f7] px-3 py-1.5 font-medium text-[#a855f7] hover:bg-[#a855f7]/10"
+              >
+                {RESEND_RESET_EMAIL_LABEL}
+              </Link>
+            )}
+          </div>
+        )}
 
         <label className="mb-1 block text-sm text-white/70" htmlFor="email">
           Email

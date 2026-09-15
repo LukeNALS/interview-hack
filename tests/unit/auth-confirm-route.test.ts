@@ -20,7 +20,7 @@ test("test_auth_confirm_missing_token_hash_redirects_to_login_link_invalid", asy
   const result = await GET(new NextRequest(`${BASE}/auth/confirm?type=recovery`));
 
   // Assert
-  expect(result.headers.get("location")).toBe(`${BASE}/login?error=link_invalid`);
+  expect(result.headers.get("location")).toBe(`${BASE}/login?error=link_invalid&type=recovery`);
   expect(verifyOtpMock).not.toHaveBeenCalled();
 });
 
@@ -40,8 +40,19 @@ test("test_auth_confirm_verify_otp_error_redirects_to_login_link_invalid", async
   // Act
   const result = await GET(new NextRequest(`${BASE}/auth/confirm?token_hash=expired&type=recovery`));
 
-  // Assert
-  expect(result.headers.get("location")).toBe(`${BASE}/login?error=link_invalid`);
+  // Assert — giữ type=recovery để /login hiện nút gửi lại email đặt lại mật khẩu
+  expect(result.headers.get("location")).toBe(`${BASE}/login?error=link_invalid&type=recovery`);
+});
+
+test("test_auth_confirm_signup_verify_error_redirects_with_signup_type", async () => {
+  // Arrange — link xác nhận đăng ký đã dùng/hết hạn
+  verifyOtpMock.mockResolvedValue({ error: { message: "Token has expired" } });
+
+  // Act
+  const result = await GET(new NextRequest(`${BASE}/auth/confirm?token_hash=expired&type=signup`));
+
+  // Assert — KHÔNG gắn type=recovery (không được gợi ý đặt lại mật khẩu)
+  expect(result.headers.get("location")).toBe(`${BASE}/login?error=link_invalid&type=signup`);
 });
 
 test("test_auth_confirm_recovery_success_redirects_to_reset_password", async () => {

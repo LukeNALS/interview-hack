@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { OPEN_LATEST_EMAIL_HINT } from "@/lib/password-reset-user-facing-messages";
 
 const NEUTRAL_MESSAGE =
   "Nếu email này có tài khoản, bạn sẽ nhận được đường dẫn đặt lại mật khẩu trong ít phút.";
@@ -41,6 +42,7 @@ export default function ForgotPasswordPage() {
         <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/5 p-8 text-center text-white">
           <h1 className="mb-2 text-xl font-semibold">Kiểm tra email</h1>
           <p className="text-sm text-white/70">{NEUTRAL_MESSAGE}</p>
+          <p className="mt-3 text-sm font-medium text-white">{OPEN_LATEST_EMAIL_HINT}</p>
         </div>
       </main>
     );
