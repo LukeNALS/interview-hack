@@ -1,13 +1,18 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, type FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
+const LINK_INVALID_MESSAGE = "Đường dẫn không hợp lệ hoặc đã hết hạn. Hãy yêu cầu lại.";
+
 // Màn login tối giản (token màu chính — UI chi tiết hoàn thiện ở P03).
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  // useSearchParams cần bọc Suspense (Next 16) — đọc ?error=link_invalid từ /auth/confirm.
+  const searchParams = useSearchParams();
+  const linkInvalid = searchParams.get("error") === "link_invalid";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +41,8 @@ export default function LoginPage() {
       >
         <h1 className="mb-6 text-xl font-semibold">Đăng nhập Interview Hack</h1>
 
+        {linkInvalid && <p className="mb-4 text-sm text-red-400">{LINK_INVALID_MESSAGE}</p>}
+
         <label className="mb-1 block text-sm text-white/70" htmlFor="email">
           Email
         </label>
@@ -60,6 +67,12 @@ export default function LoginPage() {
           className="mb-4 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 outline-none focus:border-[#a855f7]"
         />
 
+        <p className="mb-4 text-right text-sm">
+          <Link href="/forgot-password" className="text-[#a855f7] hover:underline">
+            Quên mật khẩu?
+          </Link>
+        </p>
+
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
         <button
@@ -78,5 +91,13 @@ export default function LoginPage() {
         </p>
       </form>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
   );
 }
