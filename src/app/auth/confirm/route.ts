@@ -33,5 +33,8 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.redirect(`${origin}/login?error=link_invalid`);
+  // Giữ `type` (chỉ giá trị hợp lệ) để /login hướng dẫn đúng loại link — vd chỉ link đặt lại
+  // mật khẩu mới có nút "Gửi lại email đặt lại mật khẩu" (link xác nhận đăng ký thì không).
+  const typeParam = type && ALLOWED_TYPES.has(type) ? `&type=${type}` : "";
+  return NextResponse.redirect(`${origin}/login?error=link_invalid${typeParam}`);
 }

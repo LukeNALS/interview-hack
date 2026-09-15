@@ -256,8 +256,13 @@ otp_expiry = 3600
 subject = "Xác nhận email để bắt đầu dùng Interview Hack"
 content_path = "./supabase/templates/confirmation.html"
 
+# Tiêu đề khác nhau mỗi lần yêu cầu → Gmail không gộp thread (user hay bấm nhầm mail cũ đã
+# bị huỷ). CHỈ lấy 2 số đầu OTP: cả mã trong tiêu đề = lộ OTP trên màn hình khoá (chiếm tài
+# khoản); TokenHash cũng không dùng được vì = sha224(email+OTP), dò ngược offline được.
+# Prod CHƯA áp được: project dùng SMTP mặc định → Management API từ chối sửa template/subject
+# cho tới khi có domain + SMTP riêng.
 [auth.email.template.recovery]
-subject = "Đặt lại mật khẩu Interview Hack"
+subject = "Đặt lại mật khẩu Interview Hack (yêu cầu #{{ slice .Token 0 2 }})"
 content_path = "./supabase/templates/recovery.html"
 
 # Uncomment to customize notification email template

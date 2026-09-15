@@ -66,14 +66,62 @@ test("test_reset_password_success_shows_toast_and_redirects_home", async () => {
   expect(refreshMock).toHaveBeenCalledTimes(1);
 });
 
-test("test_reset_password_api_error_shows_message_and_does_not_redirect", async () => {
+test("test_reset_password_unknown_api_error_shows_generic_vietnamese_message_and_does_not_redirect", async () => {
   // Arrange
-  updateUserMock.mockResolvedValue({ data: null, error: { message: "Session hết hạn" } });
+  updateUserMock.mockResolvedValue({
+    data: null,
+    error: { name: "AuthSessionMissingError", message: "Auth session missing!" },
+  });
+
+  // Act
+  fillAndSubmit("longenough1", "longenough1");
+
+  // Assert — không lộ message tiếng Anh gốc
+  await waitFor(() =>
+    expect(
+      screen.getByText("Không đổi được mật khẩu. Hãy thử lại — nếu vẫn lỗi, hãy yêu cầu email đặt lại mật khẩu mới."),
+    ).toBeInTheDocument(),
+  );
+  expect(screen.queryByText("Auth session missing!")).not.toBeInTheDocument();
+  expect(pushMock).not.toHaveBeenCalled();
+});
+
+test("test_reset_password_same_as_current_password_shows_must_differ_message", async () => {
+  // Arrange — GoTrue trả 422 same_password khi nhập lại mật khẩu đang dùng
+  updateUserMock.mockResolvedValue({
+    data: null,
+    error: {
+      name: "AuthApiError",
+      status: 422,
+      code: "same_password",
+      message: "New password should be different from the old password.",
+    },
+  });
 
   // Act
   fillAndSubmit("longenough1", "longenough1");
 
   // Assert
-  await waitFor(() => expect(screen.getByText("Session hết hạn")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("Mật khẩu mới phải khác mật khẩu hiện tại.")).toBeInTheDocument());
+  expect(showToastMock).not.toHaveBeenCalled();
+  expect(pushMock).not.toHaveBeenCalled();
+});
+
+test("test_reset_password_weak_password_error_shows_weak_password_message", async () => {
+  // Arrange
+  updateUserMock.mockResolvedValue({
+    data: null,
+    error: { name: "AuthWeakPasswordError", status: 422, code: "weak_password", message: "Password is too weak" },
+  });
+
+  // Act
+  fillAndSubmit("longenough1", "longenough1");
+
+  // Assert
+  await waitFor(() =>
+    expect(
+      screen.getByText("Mật khẩu mới chưa đủ mạnh — hãy chọn mật khẩu dài hơn, có cả chữ và số, khó đoán hơn."),
+    ).toBeInTheDocument(),
+  );
   expect(pushMock).not.toHaveBeenCalled();
 });

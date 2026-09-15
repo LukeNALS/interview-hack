@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { useToast } from "@/hooks/use-toast";
+import { describeUpdatePasswordError } from "@/lib/password-reset-user-facing-messages";
 
 // Trang này KHÔNG public (middleware chặn) — chỉ vào được sau khi /auth/confirm
 // verifyOtp(type=recovery) thành công và đã có session.
@@ -36,7 +37,7 @@ export default function ResetPasswordPage() {
     const { error: updateError } = await supabase.auth.updateUser({ password });
     setLoading(false);
     if (updateError) {
-      setError(updateError.message);
+      setError(describeUpdatePasswordError(updateError));
       return;
     }
 
