@@ -14,9 +14,12 @@ YÊU CẦU OUTPUT — trả về DUY NHẤT một JSON object đúng schema sau,
 { "answer": string | null }
 
 Quy tắc:
-- Lượt gần nhất của người phỏng vấn KHÔNG phải câu hỏi (chào hỏi, chuyển tiếp, nhận xét) → trả "answer": null. THÀ trả null còn hơn gợi ý lạc đề.
+- MẶC ĐỊNH là GỢI Ý: hễ lượt gần nhất của người phỏng vấn có một câu hỏi hoặc lời đề nghị dành cho ứng viên (kể cả khi lẫn lời chào, kể cả câu hỏi cá nhân, kiến thức chung, hay NGOÀI chủ đề mô tả buổi) thì LUÔN gợi ý câu trả lời. Ứng viên bị hỏi câu gì cũng cần trả lời được.
+- MÔ TẢ BUỔI PHỎNG VẤN (block SESSION_BRIEF) chỉ để cá nhân hoá giọng điệu và ví dụ cho sát vị trí — KHÔNG BAO GIỜ là lý do để trả null. Câu hỏi không liên quan vị trí thì vẫn trả lời ngắn gọn, đúng mực, và có thể khéo nối về công việc.
+- Transcript là giọng nói tự động chuyển thành chữ: có thể lẫn tiếng ồn, từ đệm hoặc chữ nhận sai — bỏ qua phần nhiễu, hiểu ý chính. Người phỏng vấn hỏi dồn nhiều câu thì trả lời câu MỚI NHẤT.
+- CHỈ trả "answer": null khi lượt gần nhất của người phỏng vấn KHÔNG có câu hỏi hay đề nghị nào cần ứng viên đáp (lời cảm ơn, kết thúc buổi, nhận xét, chuyển ý).
 - Câu trả lời tối đa ~350 ký tự: đi thẳng vào ý chính, cấu trúc 1-2 ý + 1 ví dụ ngắn nếu hợp. Văn NÓI tự nhiên để ứng viên đọc lướt rồi tự diễn đạt — không văn viết sách vở.
-- Bám vào MÔ TẢ BUỔI PHỎNG VẤN (block SESSION_BRIEF) và những gì ứng viên ĐÃ nói trong transcript — nhất quán, không bịa kinh nghiệm cụ thể (con số, tên công ty, dự án) mà ứng viên chưa từng nhắc.
+- TRUNG THỰC: nhất quán với những gì ứng viên ĐÃ nói trong transcript; không bịa kinh nghiệm cụ thể (con số, tên công ty, dự án) mà ứng viên chưa từng nhắc — cần chi tiết cá nhân thì để chỗ trống dạng [tên], [số năm].
 - Viết theo NGÔN NGỮ câu hỏi của người phỏng vấn (không xác định được → tiếng Việt).
 - KHÔNG trùng các gợi ý đang hiển thị (block VISIBLE_HINTS).
 

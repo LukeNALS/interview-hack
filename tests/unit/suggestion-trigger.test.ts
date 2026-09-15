@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { createSuggestionTrigger } from "@/hooks/live-session/suggestion-trigger";
+import { createSuggestionTrigger, SUGGESTION_MIN_GAP_MS } from "@/hooks/live-session/suggestion-trigger";
 
 /** Harness fake-clock: điều khiển thời gian + timer bằng tay, không timer thật. */
 function makeHarness(nowStart = 100_000) {
@@ -122,5 +122,33 @@ test("test_suggestion_trigger_post_rejection_does_not_break_next_cycle", async (
   advance(2500);
 
   // Assert — không unhandled rejection, vẫn gọi lần 2
+  expect(post).toHaveBeenCalledTimes(2);
+});
+
+test("test_suggestion_trigger_default_min_gap_is_zero_every_question_gets_hint", () => {
+  // Arrange — KHÔNG truyền minGapMs: kiểm đúng giá trị mặc định đang chạy trên prod (0).
+  let now = 100_000;
+  let pending: { cb: () => void; at: number } | null = null;
+  const post = vi.fn(() => Promise.resolve());
+  const trigger = createSuggestionTrigger({
+    post,
+    debounceMs: 2500,
+    now: () => now,
+    setTimer: (cb, ms) => (pending = { cb, at: now + ms }),
+    clearTimer: () => (pending = null),
+  });
+  const advance = (ms: number) => {
+    now += ms;
+    if (pending && now >= pending.at) { const { cb } = pending; pending = null; cb(); }
+  };
+
+  // Act — lượt 1 bắn; lượt 2 tới ngay sau debounce (cách lần POST trước 2.5s).
+  trigger.onCandidateFinal();
+  advance(2500);
+  trigger.onCandidateFinal();
+  advance(2500);
+
+  // Assert
+  expect(SUGGESTION_MIN_GAP_MS).toBe(0);
   expect(post).toHaveBeenCalledTimes(2);
 });

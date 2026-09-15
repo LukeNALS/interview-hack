@@ -21,6 +21,12 @@ const MAX_UTTERANCES = 10;
 const MAX_UTTERANCE_CHARS = 1000;
 const MAX_BRIEF_CHARS = 2000;
 
+/** Speech-to-text hay để khoảng trắng đầu dòng/nhiều dấu cách — chuẩn hoá trước khi đưa model:
+ *  đo 2026-09-15, riêng khoảng trắng thừa đã đủ đẩy quyết định của model từ gợi ý sang null. */
+export function normalizeUtteranceText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function wrapDataBlock(label: string, content: string): string {
   return `<<<${label}_START>>>\n${content}\n<<<${label}_END>>>`;
 }
@@ -30,7 +36,7 @@ export function buildAnswerHintPrompt(input: AnswerHintPromptInput): { system: s
   const transcript =
     recent.length > 0
       ? recent
-          .map((u) => `${u.speaker === "interviewer" ? "PV" : "TÔI"}: ${u.text.slice(0, MAX_UTTERANCE_CHARS)}`)
+          .map((u) => `${u.speaker === "interviewer" ? "PV" : "TÔI"}: ${normalizeUtteranceText(u.text).slice(0, MAX_UTTERANCE_CHARS)}`)
           .join("\n")
       : "(chưa có lượt thoại)";
   const visible =
