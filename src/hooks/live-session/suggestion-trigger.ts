@@ -4,7 +4,10 @@
  *
  * Hành vi đã chốt với Luke 2026-09-04:
  *  - Mỗi utterance.final của ỨNG VIÊN → reset debounce 2.5s (đợi họ nói xong hẳn).
- *  - Debounce cháy mà chưa đủ 20s kể từ lần POST trước → BỎ QUA (không xếp hàng);
+ *  - Interview Hack (gợi ý TRẢ LỜI): KHÔNG có khoảng cách tối thiểu — mỗi câu hỏi mới của
+ *    người phỏng vấn đều cần gợi ý (2026-09-15: khoảng 20s cũ nuốt 2/3 câu hỏi trong buổi test).
+ *    Debounce 2.5s vẫn gộp các lượt dồn dập; trần chi phí nằm ở rate limit route answer-hint.
+ *  - (Tham số minGapMs vẫn giữ để test/tái dùng) Debounce cháy mà chưa đủ minGapMs → BỎ QUA;
  *    lượt final kế tiếp sẽ kích lại — tránh dội gợi ý dồn cục.
  *  - post() là best-effort: rejection bị nuốt (429/mạng/409 không được phá chu kỳ sau).
  */
@@ -26,7 +29,7 @@ export interface SuggestionTrigger {
 }
 
 export const SUGGESTION_DEBOUNCE_MS = 2500;
-export const SUGGESTION_MIN_GAP_MS = 20_000;
+export const SUGGESTION_MIN_GAP_MS = 0;
 
 export function createSuggestionTrigger(deps: SuggestionTriggerDeps): SuggestionTrigger {
   const debounceMs = deps.debounceMs ?? SUGGESTION_DEBOUNCE_MS;

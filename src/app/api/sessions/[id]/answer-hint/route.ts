@@ -19,7 +19,7 @@ import type { Speaker } from "@/types/events";
  * POST /api/sessions/:id/answer-hint — producer "gợi ý trả lời" cho chế độ ỨNG VIÊN
  * (plan 20260905-0820). Client-trigger debounce sau final của NGƯỜI
  * PHỎNG VẤN, best-effort toàn tuyến ({suggested:false} thay vì 5xx), rate-limit
- * fail-closed 6/phút, task LLM 'suggest' (cùng model/timeout). Chỉ chạy cho session
+ * fail-closed 12/phút (nâng từ 6 khi bỏ khoảng cách tối thiểu giữa các gợi ý, 2026-09-15), task LLM 'suggest' (cùng model/timeout). Chỉ chạy cho session
  * kind='candidate' — buổi interviewer gọi nhầm trả 404 không lộ chi tiết.
  */
 export const runtime = "nodejs";
@@ -58,7 +58,7 @@ export const POST = withAuth(async (req: NextRequest, ctx: RouteContext) => {
   }
 
   // Fail-CLOSED: hint là phụ trợ — grant hỏng thì thà mất hint còn hơn mất trần chi phí.
-  const limit = await checkRateLimit({ key: `answer-hint:min:${id}`, windowSeconds: 60, limit: 6 });
+  const limit = await checkRateLimit({ key: `answer-hint:min:${id}`, windowSeconds: 60, limit: 12 });
   if (!limit.allowed) {
     throw new AppError("Vượt giới hạn gợi ý — thử lại sau", 429, "rate_limit_exceeded");
   }
