@@ -85,6 +85,18 @@ function makeFakeClient() {
       return { data: rateLimitAllowed, error: null };
     }
     if (fn === "next_utterance_seq") return { data: 1, error: null };
+    // start_session/end_session/mark_session_capped (0018) trả 1 row `sessions` composite —
+    // route đọc thẳng field từ `data` (started_at/cap_seconds/mode/status/...). Mock trả về
+    // hợp nhất sessionRow hiện tại + field mà từng route cần, đủ để không vỡ field access.
+    if (fn === "start_session") {
+      return { data: { ...(sessionRow ?? {}), status: "live" }, error: null };
+    }
+    if (fn === "end_session") {
+      return {
+        data: { ...(sessionRow ?? {}), status: "done", ended_at: new Date().toISOString(), duration_sec: 60, ended_reason: "user" },
+        error: null,
+      };
+    }
     return { data: null, error: null };
   });
 
@@ -315,7 +327,7 @@ describe("rate limit — POST /api/sessions/:id/start (trước khi trừ quota)
       window: "3600 seconds",
       limit: 60,
     });
-    expect(rpcCalls).not.toContain("debit_free_session");
+    expect(rpcCalls).not.toContain("start_session");
     expect(mutationsOn("sessions")).toEqual([]);
   });
 
@@ -334,10 +346,11 @@ describe("rate limit — POST /api/sessions/:id/start (trước khi trừ quota)
     const res = await sessionStartPost(makeRequest({}), makeCtx());
     const body = await res.json();
 
-    // Assert — qua cổng thì mới trừ quota
+    // Assert — qua cổng thì mới gọi RPC trừ quota (start_session, 0018 — atomic,
+    // thay debit_free_session + update tách rời cũ).
     expect(res.status).toBe(200);
     expect(body.started_at).toBe("2026-08-17T00:00:00Z");
-    expect(rpcCalls).toContain("debit_free_session");
+    expect(rpcCalls).toContain("start_session");
   });
 });
 
@@ -359,7 +372,7 @@ describe("rate limit — POST /api/sessions/:id/end (ngưỡng rộng, chặn nh
       window: "3600 seconds",
       limit: 60,
     });
-    expect(rpcCalls).not.toContain("refund_free_session");
+    expect(rpcCalls).not.toContain("end_session");
     expect(mutationsOn("sessions")).toEqual([]);
   });
 
@@ -372,10 +385,11 @@ describe("rate limit — POST /api/sessions/:id/end (ngưỡng rộng, chặn nh
     const res = await sessionEndPost(makeRequest({}), makeCtx());
     const body = await res.json();
 
-    // Assert
+    // Assert — route /end không còn `.update()` trực tiếp trên sessions (chuyển hết
+    // sang RPC end_session, 0018) — chứng cứ "đã kết thúc" giờ là gọi đúng RPC.
     expect(res.status).toBe(200);
     expect(body.status).toBe("done");
-    expect(mutationsOn("sessions").map((o) => o.op)).toContain("update");
+    expect(rpcCalls).toContain("end_session");
   });
 });
 

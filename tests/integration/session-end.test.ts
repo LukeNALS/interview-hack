@@ -4,10 +4,12 @@ import type { NextRequest } from "next/server";
 vi.mock("server-only", () => ({}));
 
 /**
- * Integration test cho POST /api/sessions/:id/end — Interview Hack (chỉ ứng
- * viên) chốt buổi thẳng status='done', KHÔNG còn report job (report_jobs
- * marker/skip_report đã bị xoá cùng tính năng người phỏng vấn). Mock Supabase
- * bespoke (chainable, chỉ còn 1 client — route không dùng service-role nữa).
+ * Integration test cho POST /api/sessions/:id/end — route giờ gọi RPC `end_session`
+ * (0018, port từ interview-copilot fix/session-quota-lockdown) thay vì tự update +
+ * refund tách rời. Interview Hack (chỉ ứng viên) không còn report job — end_session
+ * chốt THẲNG status='done', khớp hành vi route trước khi port. Mock chỉ còn spy vào
+ * `rpc("end_session", ...)`, KHÔNG còn spy `.update()` trên sessions (route không tự
+ * update nữa — RPC làm hết dưới quyền owner).
  */
 
 interface SessionFixture {
@@ -19,9 +21,17 @@ interface SessionFixture {
   ended_reason: string | null;
 }
 
+interface EndSessionRpcRow {
+  id: string;
+  status: string;
+  ended_at: string;
+  duration_sec: number;
+  ended_reason: string;
+}
+
 let sessionFixture: SessionFixture;
-const refundRpcSpy = vi.fn();
-const sessionUpdateSpy = vi.fn();
+let endSessionResult: { data: EndSessionRpcRow | null; error: { message: string } | null };
+const endSessionRpcSpy = vi.fn();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sessionsBuilder(): any {
@@ -29,11 +39,6 @@ function sessionsBuilder(): any {
     select: () => builder,
     eq: () => builder,
     maybeSingle: async () => ({ data: sessionFixture, error: null }),
-    update: (payload: Record<string, unknown>) => {
-      sessionUpdateSpy(payload);
-      Object.assign(sessionFixture, payload);
-      return { eq: () => Promise.resolve({ data: null, error: null }) };
-    },
   };
   return builder;
 }
@@ -44,11 +49,11 @@ function makeUserClient() {
     throw new Error(`bảng không mong đợi trong test: ${table}`);
   });
   // Route /end nay có rate limit (M11) → `bump_rate_limit` chạy trước mọi thứ.
-  // Trả sớm TRƯỚC `refundRpcSpy` để bump không bị đếm nhầm thành lần hoàn quota.
+  // Trả sớm TRƯỚC `endSessionRpcSpy` để bump không bị đếm nhầm thành lần kết thúc.
   const rpc = vi.fn((fn: string, args: unknown) => {
     if (fn === "bump_rate_limit") return Promise.resolve({ data: true, error: null });
-    refundRpcSpy(fn, args);
-    return Promise.resolve({ data: 2, error: null });
+    endSessionRpcSpy(fn, args);
+    return Promise.resolve(endSessionResult);
   });
   const auth = { getUser: vi.fn(async () => ({ data: { user: { id: "user-1", email_confirmed_at: "2026-01-01T00:00:00Z" } }, error: null })) };
   return { from, rpc, auth };
@@ -72,12 +77,12 @@ function minutesAgoIso(minutes: number): string {
 
 describe("POST /api/sessions/:id/end", () => {
   beforeEach(() => {
-    refundRpcSpy.mockClear();
-    sessionUpdateSpy.mockClear();
+    endSessionRpcSpy.mockClear();
   });
 
   test("test_end_session_shorter_than_five_minutes_refunds_free_session", async () => {
-    // Arrange — buổi live 4 phút (< ngưỡng 300s)
+    // Arrange — buổi live 4 phút (< ngưỡng 300s) — RPC tự hoàn quota nội bộ, route
+    // chỉ cần gọi đúng RPC với đúng session id (RPC guard double-refund ở tầng DB).
     sessionFixture = {
       id: "session-1",
       status: "live",
@@ -85,6 +90,10 @@ describe("POST /api/sessions/:id/end", () => {
       ended_at: null,
       duration_sec: null,
       ended_reason: null,
+    };
+    endSessionResult = {
+      data: { id: "session-1", status: "done", ended_at: new Date().toISOString(), duration_sec: 240, ended_reason: "user" },
+      error: null,
     };
     const { POST } = await import("@/app/api/sessions/[id]/end/route");
 
@@ -95,11 +104,11 @@ describe("POST /api/sessions/:id/end", () => {
     // Assert
     expect(res.status).toBe(200);
     expect(body.duration_sec).toBeLessThan(300);
-    expect(refundRpcSpy).toHaveBeenCalledWith("refund_free_session", { p_session: "session-1" });
+    expect(endSessionRpcSpy).toHaveBeenCalledWith("end_session", { p_session: "session-1" });
   });
 
   test("test_end_session_longer_than_five_minutes_does_not_refund", async () => {
-    // Arrange — buổi live 20 phút (>= ngưỡng 300s)
+    // Arrange — buổi live 20 phút (>= ngưỡng 300s) — RPC tự quyết định không refund.
     sessionFixture = {
       id: "session-1",
       status: "live",
@@ -107,6 +116,10 @@ describe("POST /api/sessions/:id/end", () => {
       ended_at: null,
       duration_sec: null,
       ended_reason: null,
+    };
+    endSessionResult = {
+      data: { id: "session-1", status: "done", ended_at: new Date().toISOString(), duration_sec: 1200, ended_reason: "user" },
+      error: null,
     };
     const { POST } = await import("@/app/api/sessions/[id]/end/route");
 
@@ -117,7 +130,6 @@ describe("POST /api/sessions/:id/end", () => {
     // Assert
     expect(res.status).toBe(200);
     expect(body.duration_sec).toBeGreaterThanOrEqual(300);
-    expect(refundRpcSpy).not.toHaveBeenCalled();
   });
 
   test("test_end_session_from_live_sets_status_done_directly", async () => {
@@ -131,6 +143,10 @@ describe("POST /api/sessions/:id/end", () => {
       duration_sec: null,
       ended_reason: null,
     };
+    endSessionResult = {
+      data: { id: "session-1", status: "done", ended_at: new Date().toISOString(), duration_sec: 1200, ended_reason: "user" },
+      error: null,
+    };
     const { POST } = await import("@/app/api/sessions/[id]/end/route");
 
     // Act
@@ -141,7 +157,6 @@ describe("POST /api/sessions/:id/end", () => {
     expect(res.status).toBe(200);
     expect(body.status).toBe("done");
     expect(body.ended_reason).toBe("user");
-    expect(sessionUpdateSpy).toHaveBeenCalledWith(expect.objectContaining({ status: "done", ended_reason: "user" }));
   });
 
   test("test_end_session_cap_pending_also_sets_status_done", async () => {
@@ -153,6 +168,10 @@ describe("POST /api/sessions/:id/end", () => {
       ended_at: null,
       duration_sec: null,
       ended_reason: "cap",
+    };
+    endSessionResult = {
+      data: { id: "session-1", status: "done", ended_at: new Date().toISOString(), duration_sec: 5400, ended_reason: "cap" },
+      error: null,
     };
     const { POST } = await import("@/app/api/sessions/[id]/end/route");
 
@@ -167,21 +186,21 @@ describe("POST /api/sessions/:id/end", () => {
   });
 
   test("test_end_session_already_done_is_idempotent_no_side_effect", async () => {
-    // Arrange — P05 đã đánh dấu status='processing'+ended_reason='cap' lúc cap 90' nhưng chưa qua /end.
+    // Arrange — session đã ended_at + status='done' từ trước (route rẽ nhánh alreadyEnded
+    // TRƯỚC KHI gọi RPC — không cần mock end_session cho ca này).
     sessionFixture = {
       id: "session-1",
-      status: "processing",
+      status: "done",
       started_at: minutesAgoIso(90),
-      ended_at: null,
-      duration_sec: null,
+      ended_at: minutesAgoIso(1),
+      duration_sec: 5340,
       ended_reason: "cap",
     };
     const { POST } = await import("@/app/api/sessions/[id]/end/route");
 
-    // Act — gọi 2 lần: lần 1 xử lý thật, lần 2 phải idempotent (0 side-effect thêm).
+    // Act — gọi 2 lần: cả 2 đều phải idempotent (0 lần gọi end_session).
     const res1 = await POST(makeRequest(), makeCtx());
     const body1 = await res1.json();
-    sessionUpdateSpy.mockClear();
     const res2 = await POST(makeRequest(), makeCtx());
     const body2 = await res2.json();
 
@@ -190,6 +209,6 @@ describe("POST /api/sessions/:id/end", () => {
     expect(body1.status).toBe("done");
     expect(res2.status).toBe(200);
     expect(body2.ended_at).toBe(body1.ended_at);
-    expect(sessionUpdateSpy).not.toHaveBeenCalled();
+    expect(endSessionRpcSpy).not.toHaveBeenCalled();
   });
 });

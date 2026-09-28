@@ -7,11 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.15"
-  }
   public: {
     Tables: {
       audit_log: {
@@ -515,9 +510,148 @@ export type Database = {
         Returns: boolean
       }
       debit_free_session: { Args: { p_session: string }; Returns: number }
+      end_session: {
+        Args: { p_session: string }
+        Returns: {
+          candidate_name: string | null
+          cap_seconds: number
+          created_at: string
+          cv_error: string | null
+          cv_file_id: string | null
+          cv_file_path: string | null
+          cv_status: Database["public"]["Enums"]["cv_status_type"]
+          cv_text: string | null
+          duration_sec: number | null
+          ended_at: string | null
+          ended_reason: Database["public"]["Enums"]["ended_reason_type"] | null
+          id: string
+          jd_text: string | null
+          kind: string
+          last_seq: number
+          mode: Database["public"]["Enums"]["session_mode"]
+          position: string | null
+          purge_scheduled_at: string | null
+          quick_eval: Json | null
+          quota_debited: boolean
+          quota_refunded: boolean
+          recording_started_at: string | null
+          share_expires_at: string | null
+          share_token: string | null
+          started_at: string | null
+          status: Database["public"]["Enums"]["session_status"]
+          translation_lang: string
+          user_id: string
+          wish_text: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "sessions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       get_shared_report: { Args: { p_token: string }; Returns: Json }
+      list_expired_sessions: {
+        Args: never
+        Returns: {
+          session_id: string
+          storage_paths: string[]
+        }[]
+      }
+      list_orphan_storage_objects: {
+        Args: { p_limit?: number; p_older_than?: string }
+        Returns: {
+          bucket_id: string
+          object_name: string
+        }[]
+      }
+      mark_session_capped: {
+        Args: { p_session: string }
+        Returns: {
+          candidate_name: string | null
+          cap_seconds: number
+          created_at: string
+          cv_error: string | null
+          cv_file_id: string | null
+          cv_file_path: string | null
+          cv_status: Database["public"]["Enums"]["cv_status_type"]
+          cv_text: string | null
+          duration_sec: number | null
+          ended_at: string | null
+          ended_reason: Database["public"]["Enums"]["ended_reason_type"] | null
+          id: string
+          jd_text: string | null
+          kind: string
+          last_seq: number
+          mode: Database["public"]["Enums"]["session_mode"]
+          position: string | null
+          purge_scheduled_at: string | null
+          quick_eval: Json | null
+          quota_debited: boolean
+          quota_refunded: boolean
+          recording_started_at: string | null
+          share_expires_at: string | null
+          share_token: string | null
+          started_at: string | null
+          status: Database["public"]["Enums"]["session_status"]
+          translation_lang: string
+          user_id: string
+          wish_text: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "sessions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       next_utterance_seq: { Args: { p_session: string }; Returns: number }
+      purge_sessions: { Args: { p_ids: string[] }; Returns: undefined }
       refund_free_session: { Args: { p_session: string }; Returns: number }
+      start_session: {
+        Args: {
+          p_mode?: Database["public"]["Enums"]["session_mode"]
+          p_session: string
+        }
+        Returns: {
+          candidate_name: string | null
+          cap_seconds: number
+          created_at: string
+          cv_error: string | null
+          cv_file_id: string | null
+          cv_file_path: string | null
+          cv_status: Database["public"]["Enums"]["cv_status_type"]
+          cv_text: string | null
+          duration_sec: number | null
+          ended_at: string | null
+          ended_reason: Database["public"]["Enums"]["ended_reason_type"] | null
+          id: string
+          jd_text: string | null
+          kind: string
+          last_seq: number
+          mode: Database["public"]["Enums"]["session_mode"]
+          position: string | null
+          purge_scheduled_at: string | null
+          quick_eval: Json | null
+          quota_debited: boolean
+          quota_refunded: boolean
+          recording_started_at: string | null
+          share_expires_at: string | null
+          share_token: string | null
+          started_at: string | null
+          status: Database["public"]["Enums"]["session_status"]
+          translation_lang: string
+          user_id: string
+          wish_text: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "sessions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      sweep_abandoned_sessions: { Args: never; Returns: undefined }
     }
     Enums: {
       cv_status_type: "none" | "reading" | "done" | "failed"
@@ -546,12 +680,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -575,11 +709,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -600,11 +734,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -625,11 +759,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -642,11 +776,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -672,3 +806,4 @@ export const Constants = {
     },
   },
 } as const
+

@@ -7,15 +7,16 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-// POST /api/sessions/:id/start → status='live', trừ quota qua RPC debit_free_session (P05 bước 2).
-// Không phải transaction thật (Supabase-js không hỗ trợ multi-statement tx) — deviation đã
-// chấp nhận (P04); lỗi giữa debit và update log lại, không rollback quota.
+// POST /api/sessions/:id/start → status='live', trừ quota — TẤT CẢ trong 1 RPC
+// `start_session` (0018), atomic thật (không còn 2 bước debit+update tách rời như
+// trước). RPC tự xử lý idempotent (đã live+debited → trả nguyên) và session cũ dở
+// dang từ code pre-0018 (status='prep' nhưng đã debited) → hoàn tất KHÔNG debit lại.
 //
-// BUG #4: body {mode} (optional) chốt chế độ user chọn ở màn setup — ghi CÙNG lượt update
-// chuyển status='live' thay vì thêm endpoint PATCH riêng: mode chỉ có ý nghĩa đúng tại thời
-// điểm vào buổi, gộp 1 request tránh cửa sổ "đã live nhưng mode còn cũ" mà màn live đọc trúng.
+// BUG #4: body {mode} (optional) chốt chế độ user chọn ở màn setup — truyền qua RPC
+// cùng lượt chuyển status='live': mode chỉ có ý nghĩa đúng tại thời điểm vào buổi,
+// gộp 1 request tránh cửa sổ "đã live nhưng mode còn cũ" mà màn live đọc trúng.
 //
-// Rate limit 60/giờ/user [P07 M11] đặt ở HOC — tức TRƯỚC `debit_free_session`.
+// Rate limit 60/giờ/user [P07 M11] đặt ở HOC — tức TRƯỚC `start_session`.
 // Thứ tự này là bắt buộc: chặn SAU khi RPC đã trừ quota = user mất 1 buổi free
 // mà buổi không hề bắt đầu (RPC guard double-debit nên không tự hoàn). Ngưỡng
 // để rộng vì start là cửa vào buổi thật — quota free mới là trần chống lạm
@@ -54,28 +55,25 @@ export const POST = withAuth(
         throw new AppError("Session không ở trạng thái có thể bắt đầu buổi", 409, "invalid_session_status");
       }
 
-      const { error: debitError } = await supabase.rpc("debit_free_session", { p_session: id });
-      if (debitError) {
-        if (debitError.message.includes("hết buổi free")) {
+      // `start_session` trả 1 row `sessions` (composite, không phải setof) — đọc
+      // thẳng field từ `data`, KHÔNG chain `.select()/.single()` (dành cho setof).
+      const { data: updated, error: startError } = await supabase.rpc("start_session", {
+        p_session: id,
+        ...(mode ? { p_mode: mode } : {}),
+      });
+
+      if (startError) {
+        if (startError.message.includes("hết buổi free")) {
           throw new AppError("Đã dùng hết số buổi miễn phí", 409, "no_free_sessions");
         }
-        if (debitError.message.includes("đã trừ quota rồi")) {
-          throw new AppError("Buổi này đã được bắt đầu rồi", 409, "session_already_started");
+        if (startError.message.includes("không ở trạng thái có thể bắt đầu buổi")) {
+          throw new AppError("Session không ở trạng thái có thể bắt đầu buổi", 409, "invalid_session_status");
         }
-        console.error("[start] debit_free_session lỗi", { sessionId: id, error: debitError.message });
+        console.error("[start] start_session lỗi", { sessionId: id, error: startError.message });
         throw new AppError("Không thể bắt đầu buổi — thử lại", 500, "internal_error");
       }
-
-      const nowIso = new Date().toISOString();
-      const { data: updated, error: updateError } = await supabase
-        .from("sessions")
-        .update({ status: "live", started_at: nowIso, recording_started_at: nowIso, ...(mode ? { mode } : {}) })
-        .eq("id", id)
-        .select("started_at, cap_seconds, mode")
-        .single();
-
-      if (updateError || !updated) {
-        console.error("[start] cập nhật session lỗi", { sessionId: id, error: updateError?.message });
+      if (!updated) {
+        console.error("[start] start_session không trả dữ liệu", { sessionId: id });
         throw new AppError("Không thể bắt đầu buổi — thử lại", 500, "internal_error");
       }
 

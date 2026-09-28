@@ -3,14 +3,11 @@ import { withAuth, type AuthedContext } from "@/lib/api-handler";
 import { withRateLimit } from "@/lib/rate-limit";
 import { AppError, errorResponseBody } from "@/lib/errors";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { computeElapsedSeconds } from "@/lib/cap-clock";
 import { endSessionSchema } from "@/schemas/rest";
 
 export const maxDuration = 30;
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-const REFUND_THRESHOLD_SEC = 300;
 
 interface SessionEndRow {
   id: string;
@@ -23,10 +20,11 @@ interface SessionEndRow {
 
 // POST /api/sessions/:id/end → idempotent: chấp nhận status='live' HOẶC
 // (status='processing' AND ended_reason='cap' — session bị cap ở P05 utterances
-// route nhưng chưa qua /end). Chốt ended_at/duration_sec/status='done' NGAY —
-// Interview Hack (chỉ ứng viên) không còn report job nào chạy sau khi kết thúc.
-// Hoàn quota <5' (RPC tự guard double-refund). Gọi lại khi đã ended → 200 trạng
-// thái hiện tại, KHÔNG side-effect kép.
+// route nhưng chưa qua /end). RPC `end_session` (0018) tính ended_at/duration_sec
+// TRONG DB (không tin client), chốt thẳng status='done' (Interview Hack không có
+// report pipeline), hoàn quota <5' — TẤT CẢ atomic 1 transaction, tự guard
+// double-refund/double-end. Gọi lại khi đã ended → 200 trạng thái hiện tại,
+// KHÔNG side-effect kép.
 //
 // Rate limit 60/giờ/user [P07 M11] — CỐ Ý rộng: đây là đường thoát của buổi
 // phỏng vấn thật (chốt ended_at, hoàn quota <5'). Chặn nhầm ở đây = buổi kẹt
@@ -81,34 +79,30 @@ export const POST = withAuth(
         throw new AppError("Session không ở trạng thái có thể kết thúc", 409, "invalid_session_status");
       }
 
-      // Interview Hack (chỉ ứng viên) không còn report job — kết thúc buổi luôn chốt
-      // thẳng status='done', không có trạng thái 'processing' chờ report nữa.
-      const nowIso = new Date().toISOString();
-      const durationSec = Math.max(0, computeElapsedSeconds(session.started_at, new Date(nowIso)) ?? 0);
-      const endedReason = session.ended_reason === "cap" ? "cap" : "user";
-
-      const { error: updateError } = await supabase
-        .from("sessions")
-        .update({ ended_at: nowIso, duration_sec: durationSec, status: "done", ended_reason: endedReason })
-        .eq("id", id);
-      if (updateError) {
-        console.error("[end] cập nhật session lỗi", { sessionId: id, error: updateError.message });
+      // `end_session` (0018) tính ended_at/duration_sec TRONG DB (server time, không tin
+      // client), chốt thẳng status='done' (Interview Hack không có report pipeline), và
+      // hoàn quota <5' — atomic 1 transaction.
+      const { data: updated, error: endError } = await supabase.rpc("end_session", { p_session: id });
+      if (endError) {
+        if (endError.message.includes("không ở trạng thái có thể kết thúc")) {
+          throw new AppError("Session không ở trạng thái có thể kết thúc", 409, "invalid_session_status");
+        }
+        if (endError.message.includes("chưa bắt đầu")) {
+          throw new AppError("Session chưa bắt đầu, không thể kết thúc", 409, "invalid_session_status");
+        }
+        console.error("[end] end_session lỗi", { sessionId: id, error: endError.message });
+        throw new AppError("Không thể kết thúc buổi — thử lại", 500, "internal_error");
+      }
+      if (!updated) {
+        console.error("[end] end_session không trả dữ liệu", { sessionId: id });
         throw new AppError("Không thể kết thúc buổi — thử lại", 500, "internal_error");
       }
 
-      if (durationSec < REFUND_THRESHOLD_SEC) {
-        const { error: refundError } = await supabase.rpc("refund_free_session", { p_session: id });
-        if (refundError && !refundError.message.includes("không đủ điều kiện hoàn buổi free")) {
-          // Non-fatal — refund lỗi không nên chặn response trả về; log để soát sau.
-          console.error("[end] refund_free_session lỗi", { sessionId: id, error: refundError.message });
-        }
-      }
-
       return NextResponse.json({
-        ended_at: nowIso,
-        duration_sec: durationSec,
-        status: "done",
-        ended_reason: endedReason,
+        ended_at: updated.ended_at,
+        duration_sec: updated.duration_sec,
+        status: updated.status,
+        ended_reason: updated.ended_reason,
       });
     },
   ),
