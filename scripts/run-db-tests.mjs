@@ -22,6 +22,8 @@ const DB_TEST_FILES = [
   "tests/integration/storage-pagination.test.ts",
   "tests/integration/rpc-grants.test.ts",
   "tests/integration/profile-privileges.test.ts",
+  "tests/integration/session-rpc-lifecycle.test.ts",
+  "tests/integration/session-lockdown.test.ts",
 ];
 
 function fail(message) {

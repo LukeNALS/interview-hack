@@ -60,6 +60,9 @@ export const POST = withAuth(
 
       const supabase = await createServerSupabaseClient();
 
+      // KHÔNG set `status` — cột đã bị khoá khỏi INSERT grant của `authenticated`
+      // (0019_lock_sensitive_session_columns.sql). Default DB `'prep'` (0001_init.sql)
+      // cho đúng giá trị y hệt trước đây, chỉ khác là không còn ghi tường minh được nữa.
       const { data, error } = await supabase
         .from("sessions")
         .insert({
@@ -70,7 +73,6 @@ export const POST = withAuth(
           jd_text: parsed.data.jd_text,
           wish_text: parsed.data.wish_text,
           kind: parsed.data.kind,
-          status: "prep",
         })
         .select("id, status, mode, candidate_name, position, created_at, kind")
         .single();

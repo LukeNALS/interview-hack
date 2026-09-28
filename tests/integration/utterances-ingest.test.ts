@@ -29,17 +29,13 @@ let insertedIdCounter = 0;
 
 const insertSpy = vi.fn();
 const utteranceUpdateSpy = vi.fn();
-const sessionUpdateSpy = vi.fn();
+const markCappedRpcSpy = vi.fn();
 
 function makeFakeClient() {
   const from = vi.fn((table: string) => {
     if (table === "sessions") {
       return {
         select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: sessionRow, error: null }) }) }),
-        update: (payload: Record<string, unknown>) => {
-          sessionUpdateSpy(payload);
-          return { eq: async () => ({ data: null, error: null }) };
-        },
       };
     }
     if (table === "utterances") {
@@ -67,10 +63,14 @@ function makeFakeClient() {
     throw new Error(`bảng không mong đợi trong test: ${table}`);
   });
 
-  const rpc = vi.fn(async (name: string) => {
+  const rpc = vi.fn(async (name: string, args: unknown) => {
     if (name === "next_utterance_seq") {
       seqCounter += 1;
       return { data: seqCounter, error: null };
+    }
+    if (name === "mark_session_capped") {
+      markCappedRpcSpy(name, args);
+      return { data: { id: "session-1", status: "processing", ended_reason: "cap" }, error: null };
     }
     // bump_rate_limit — fail-open mặc định (true), không test rate-limit-exceeded ở đây.
     return { data: true, error: null };
@@ -111,7 +111,7 @@ describe("POST /api/sessions/:id/utterances", () => {
     insertedIdCounter = 0;
     insertSpy.mockClear();
     utteranceUpdateSpy.mockClear();
-    sessionUpdateSpy.mockClear();
+    markCappedRpcSpy.mockClear();
     broadcastEventMock.mockClear();
   });
 
@@ -136,7 +136,7 @@ describe("POST /api/sessions/:id/utterances", () => {
     // Assert
     expect(res.status).toBe(409);
     expect(responseBody.error.code).toBe("session_ended");
-    expect(sessionUpdateSpy).toHaveBeenCalledWith({ status: "processing", ended_reason: "cap" });
+    expect(markCappedRpcSpy).toHaveBeenCalledWith("mark_session_capped", { p_session: "session-1" });
     expect(insertSpy).not.toHaveBeenCalled();
   });
 

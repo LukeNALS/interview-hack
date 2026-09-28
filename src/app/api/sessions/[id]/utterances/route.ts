@@ -84,7 +84,13 @@ export const POST = withAuth(async (req: NextRequest, ctx: RouteContext) => {
   const elapsed = computeElapsedSeconds(session.started_at);
   if (session.status !== "live" || (elapsed !== null && elapsed > session.cap_seconds)) {
     if (session.status === "live") {
-      await supabase.from("sessions").update({ status: "processing", ended_reason: "cap" }).eq("id", id);
+      // `mark_session_capped` (0018) tự tính lại elapsed TRONG DB (không tin client/route) —
+      // no-op/raise nếu chưa thật sự vượt cap. Lỗi ở đây không chặn response 409 (buổi vẫn
+      // coi như đã kết thúc phía client dù DB update lỡ chưa kịp — log để soát sau).
+      const { error: capError } = await supabase.rpc("mark_session_capped", { p_session: id });
+      if (capError) {
+        console.error("[utterances] mark_session_capped lỗi", { sessionId: id, error: capError.message });
+      }
     }
     return NextResponse.json(errorResponseBody("session_ended", "Buổi phỏng vấn đã kết thúc"), { status: 409 });
   }
