@@ -78,7 +78,14 @@ suite("RLS matrix — cross-user + anon (local stack)", () => {
     update: Outcome;
     remove: Outcome;
   }> = [
-    { table: "sessions", rowId: () => ids.session, patch: { candidate_name: "HACKED" }, update: "zero-rows", remove: "zero-rows" },
+    // `update` là "denied" (không phải "zero-rows"): migration 0019_lock_sensitive_session_columns.sql
+    // (session-quota-lockdown 2026-09-28) revoke TOÀN BỘ UPDATE mức bảng trên `sessions` cho
+    // `authenticated` — Hack không có route non-lifecycle nào ghi cột khác nên KHÔNG re-grant cột
+    // UPDATE nào (khác interview-copilot, nơi cv/share/speaker/candidate_name vẫn được re-grant).
+    // Mọi UPDATE trực tiếp (kể cả trên row CHÍNH CHỦ) giờ bị chặn ở tầng privilege TRƯỚC khi RLS
+    // kịp lọc row — chặt hơn "zero-rows" cũ. Vòng đời/quota đi qua start_session/end_session/
+    // mark_session_capped (0018, SECURITY DEFINER).
+    { table: "sessions", rowId: () => ids.session, patch: { candidate_name: "HACKED" }, update: "denied", remove: "zero-rows" },
     { table: "questions", rowId: () => ids.question, patch: { text: "HACKED" }, update: "zero-rows", remove: "zero-rows" },
     { table: "utterances", rowId: () => ids.utterance, patch: { text_orig: "HACKED" }, update: "zero-rows", remove: "zero-rows" },
     { table: "reports", rowId: () => ids.report, patch: { edited_by_user: true }, update: "zero-rows", remove: "denied" },
