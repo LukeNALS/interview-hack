@@ -96,7 +96,8 @@ lượt reconnect. Không còn renew định kỳ (xem `soniox-integration-notes
   bug thứ cấp round 1 đã fix, tránh mất chunk feed trong lúc await).
 - Lỗi server sau connect (event `error`, SDK KHÔNG bắn `disconnected`): controller phân loại bằng
   `classifySonioxRealtimeError`. `retry` (401/408/5xx/ConnectionError) đi chung đường `disconnected` →
-  `onDegraded` → reconnect với cặp key mới; `session_expired`/`forbidden`/`quota`/`fatal` → `onFatal`
+  `onDegraded` → reconnect với cặp key mới (429 `limit_exceeded` cũng là `retry`); `session_expired`/
+  `forbidden`/`quota` (402: hết số dư/budget)/`fatal` → `onFatal`
   đúng 1 lần (dừng luồng đó, toast trừ `session_expired`). Lỗi của pair MỚI đến trước khi swap: handler
   bỏ qua vì chưa là connection hiện tại nên `reconnect()` tự kiểm `conn.error` — `retry` ném để backoff
   xin cặp khác, loại còn lại báo fatal.
@@ -109,6 +110,11 @@ lượt reconnect. Không còn renew định kỳ (xem `soniox-integration-notes
   `rate_limit_unavailable` (503, route fail-closed) và `soniox_key_failed` (502) vẫn backoff. Hết lượt
   → `onGiveUp` dừng capture luồng đó + toast (nói rõ "dịch vụ tạm thời không khả dụng" với 503), banner
   giữ nguyên degraded (không tự phục hồi).
+- Trần cho VÒNG degrade→reconnect: `reconnect-streak-guard.ts` (`attach-stream.ts` gọi). 3 lượt ở trên chỉ áp
+  trong MỘT lần `reconnectWithBackoff`; nếu connection mở được rồi mới bị từ chối/ngắt (401 ~230 ms sau connect,
+  429, 5xx) thì controller degrade lại và mở vòng mới. Guard đếm degrade xảy ra < 10 s sau lúc (re)connect
+  xong: lần 1 reconnect ngay, lần 2 chờ 1 s (`initialDelayMs`), lần 3 chờ 2 s, lần 4 bỏ cuộc (dừng luồng
+  đó + toast); ổn định ≥ 10 s thì reset. Rate limit 60/giờ của route mint chỉ còn là lưới cuối.
 - **KHÔNG để connection treo khi mic im lặng dài** (dẫn tới `408 request_timeout`, xem
   `soniox-integration-notes.md`) — MVP chọn phương án 2 (đóng+mở lại qua reconnect khi rớt),
   KHÔNG gửi silence frame giữ sống.

@@ -39,9 +39,19 @@ PoC Soniox nội bộ (không kèm trong repo này).
   biệt với 403 khác (thiếu quyền) bằng `raw.error_type`, KHÔNG so text `message`.
 - SDK 2.3.0 gặp lỗi server (401/403/408/5xx) chỉ bắn `error` rồi `cleanup()` gỡ listener — KHÔNG bắn
   `disconnected`. Controller phân loại `error` (`classifySonioxRealtimeError`): 401/408/5xx/
-  ConnectionError ⇒ reconnect với cặp key mới; 403 hết duration ⇒ dừng luồng đó, không toast; 403 khác
-  /402/429/400 ⇒ dừng luồng đó + toast. Sau lỗi, `sendAudio`/`finish` trên session đã chết ném
-  `StateError` nên controller chuyển `feed()` sang buffer và `closeAll` dùng `allSettled`.
+  ConnectionError và 429 ⇒ reconnect với cặp key mới; 403 hết duration ⇒ dừng luồng đó, không toast;
+  403 khác/402/400 ⇒ dừng luồng đó + toast. Theo [Soniox Errors](https://soniox.com/docs/api-reference/errors):
+  429 = `limit_exceeded` (requests/phút hoặc concurrency của org/project, thử lại được sau một lúc);
+  402 = hết số dư hoặc budget tháng (`organization_balance_exhausted`, `*_monthly_budget_exhausted`, thử lại
+  vô ích); 403 = `permission_denied` hoặc `temp_api_key_session_expired`; 401 gồm cả key single-use đã dùng.
+  400 có `error_type` `max_concurrent_streams_reached` — CHƯA rõ áp cho STT hay chỉ TTS, hiện vẫn coi 400
+  là fatal (hiện lỗi cho user). Sau lỗi, `sendAudio`/`finish` trên session đã chết ném `StateError` nên
+  controller chuyển `feed()` sang buffer và `closeAll` dùng `allSettled`.
+- Vòng degrade→reconnect được chặn bởi `reconnect-streak-guard`, KHÔNG dựa vào rate limit của route mint:
+  degrade < 10 s sau lúc (re)connect xong là "thất bại nhanh"; liên tiếp thì lần 1 reconnect ngay, lần 2 chờ
+  1 s, lần 3 chờ 2 s, lần 4 bỏ cuộc (dừng luồng đó + toast "liên tục bị ngắt hoặc từ chối"). Sống ≥ 10 s rồi
+  mới rớt thì reset. Lý do: giới hạn 3 lượt của `reconnectWithBackoff` chỉ sống trong một lần gọi, còn lỗi
+  đến SAU khi connection mở được (401 ~230 ms sau connect, 429, 5xx) mở vòng mới với bộ đếm về 0.
 - Route fail-CLOSED khi rate limit (60 request/giờ/phiên) không kiểm được (lỗi quyền lẫn lỗi hạ tầng):
   503 `rate_limit_unavailable`, không gọi Soniox. Client báo lỗi rõ và reconnect tối đa 3 lượt (chờ 1 s rồi 2 s giữa các lượt; không chờ sau lượt cuối) — cửa sổ ~3 s + thời gian request, nên RPC chớp lâu hơn thế giữa buổi thì luồng đó dừng thu tới khi tải lại trang.
 
