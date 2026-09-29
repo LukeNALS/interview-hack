@@ -13,12 +13,16 @@ import { AppError } from "@/lib/errors";
 const PERMISSION_DENIED_SQLSTATE = "42501";
 
 /**
- * Hành vi khi RPC bị TỪ CHỐI QUYỀN (42501) — tức rate limit thực chất đã TẮT.
- * - `"closed"` (mặc định): coi như vượt hạn, chặn request. Endpoint tốn tiền
- *   (LLM) hoặc phá huỷ (DELETE) phải chọn cái này — mất tính năng còn hơn mất
- *   trần chi phí trong im lặng.
+ * Hành vi khi rate limit KHÔNG KIỂM ĐƯỢC — hai lớp lỗi, mỗi lớp một option:
+ * `onPermissionDenied` (RPC bị từ chối quyền 42501, tức rate limit thực chất
+ * đã TẮT) và `onInfraError` (mọi lỗi RPC khác: timeout, connection reset, 5xx).
+ * - `"closed"`: coi như vượt hạn, chặn request (`backend_denied`, 503). Endpoint
+ *   tốn tiền (LLM, mint key Soniox) hoặc phá huỷ (DELETE) phải chọn cái này —
+ *   mất tính năng còn hơn mất trần chi phí trong im lặng.
  * - `"open"`: vẫn cho qua. CHỈ dùng khi chặn gây thiệt hại lớn hơn mất rate
- *   limit — hiện đúng 1 chỗ: `/utterances` (chặn = MẤT TRANSCRIPT đang thu).
+ *   limit — hiện là hành lang `/utterances`, `/start`, `/end` (chặn = MẤT
+ *   TRANSCRIPT đang thu / buổi kẹt `live`).
+ * Mặc định: `onPermissionDenied` = `"closed"`, `onInfraError` = `"open"`.
  */
 export type RateLimitFailMode = "open" | "closed";
 
@@ -36,12 +40,19 @@ export interface RateLimitOptions {
   client?: Awaited<ReturnType<typeof createServerSupabaseClient>>;
   /** Xem {@link RateLimitFailMode}. Mặc định `"closed"` — an toàn theo mặc định [P07 fix H3]. */
   onPermissionDenied?: RateLimitFailMode;
+  /**
+   * Xem {@link RateLimitFailMode}. Mặc định `"open"` — hạ tầng chập chờn không
+   * nên làm sập tính năng; endpoint tốn tiền mà không được phép mất trần chi
+   * phí khi RPC lỗi (vd `/soniox-key`) truyền `"closed"`.
+   */
+  onInfraError?: RateLimitFailMode;
 }
 
 /**
  * Kết quả check — CỐ Ý không phải boolean: gọi được nhưng vượt hạn
  * (`limit_exceeded`, 429) khác hẳn về bản chất với "rate limit không chạy
- * được" (`backend_denied`, 503). Boolean cũ gộp cả hai vào `false`/`true` nên
+ * được" (`backend_denied`, 503 — lỗi quyền, hoặc lỗi hạ tầng khi call site
+ * chọn `onInfraError: "closed"`). Boolean cũ gộp cả hai vào `false`/`true` nên
  * lỗi phân quyền biến mất, chỉ còn 1 dòng `console.error` [P07 fix H3].
  */
 export type RateLimitDecision =
@@ -51,11 +62,12 @@ export type RateLimitDecision =
 /**
  * Bump counter và quyết định cho qua hay không.
  *
- * Lỗi HẠ TẦNG (timeout, connection reset, RPC 5xx) → fail-OPEN như cũ: hạ tầng
- * chập chờn không nên làm sập tính năng. Lỗi PHÂN QUYỀN (42501) → fail-CLOSED
- * theo mặc định, vì nó không phải sự cố thoáng qua mà là dấu hiệu grant bị mất
- * (đúng regression mà 0008 phải vá) — fail-open ở đây = rate limit tắt vĩnh
- * viễn trong im lặng cho tới khi có người đọc log [P07 fix H3].
+ * Lỗi HẠ TẦNG (timeout, connection reset, RPC 5xx) → fail-OPEN theo mặc định
+ * (`onInfraError`): hạ tầng chập chờn không nên làm sập tính năng. Lỗi PHÂN
+ * QUYỀN (42501) → fail-CLOSED theo mặc định (`onPermissionDenied`), vì nó không
+ * phải sự cố thoáng qua mà là dấu hiệu grant bị mất (đúng regression mà 0008
+ * phải vá) — fail-open ở đây = rate limit tắt vĩnh viễn trong im lặng cho tới
+ * khi có người đọc log [P07 fix H3].
  */
 export async function checkRateLimit(options: RateLimitOptions): Promise<RateLimitDecision> {
   const supabase = options.client ?? (await createServerSupabaseClient());
@@ -66,12 +78,15 @@ export async function checkRateLimit(options: RateLimitOptions): Promise<RateLim
   });
 
   if (error) {
-    const failMode = options.onPermissionDenied ?? "closed";
-    if (error.code === PERMISSION_DENIED_SQLSTATE && failMode === "closed") {
-      console.error("[rate-limit] bump_rate_limit bị từ chối quyền (42501) — fail-CLOSED", {
-        key: options.key,
-        error: error.message,
-      });
+    const permissionDenied = error.code === PERMISSION_DENIED_SQLSTATE;
+    const failMode = permissionDenied ? (options.onPermissionDenied ?? "closed") : (options.onInfraError ?? "open");
+    if (failMode === "closed") {
+      console.error(
+        permissionDenied
+          ? "[rate-limit] bump_rate_limit bị từ chối quyền (42501) — fail-CLOSED"
+          : "[rate-limit] RPC bump_rate_limit lỗi hạ tầng — fail-CLOSED",
+        { key: options.key, code: error.code, error: error.message },
+      );
       return { allowed: false, reason: "backend_denied" };
     }
     console.error("[rate-limit] RPC bump_rate_limit lỗi — fail-open", {
