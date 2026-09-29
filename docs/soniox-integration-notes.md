@@ -28,7 +28,10 @@ PoC Soniox nội bộ (không kèm trong repo này).
   direct: 1; mỗi lượt reconnect: 1 cặp MỚI. Client xin key SAU khi user đã cấp quyền mic/chọn tab
   (TTL chỉ 60 s).
 - TTL chỉ chặn MỞ stream mới; stream đang chạy sống tiếp qua expiry (E3). Nên KHÔNG còn renew định kỳ:
-  buổi 90 phút chạy trên key đã dùng lúc mở. Renew cũ đã gỡ vì hết lý do tồn tại và là nơi mất câu (E6).
+  stream chạy trên key đã dùng lúc mở, tới `max_session_duration`. Renew cũ đã gỡ vì hết lý do tồn tại và là
+  nơi mất câu (E6). ⚠️ Giới hạn bằng chứng: E3 chỉ đo stream sống thêm ~40 s sau expiry (TTL 20 s, 461 final);
+  CHƯA có soak dài (buổi 90 phút = 90× TTL 60 s) — nếu Soniox cắt stream định kỳ thì mỗi lần là 1 reconnect
+  (mất câu chưa finalize + 1 lượt tính vào 60/giờ). Nên soak ≥ 10 phút trước khi deploy prod (runbook).
 - `max_session_duration_seconds` tính PER STREAM từ lúc connect (đồng hồ chạy từ kết nối, không từ lúc
   có audio). Hết ⇒ server cắt cứng bằng event `error` 403 với `raw.error_type =
   "temp_api_key_session_expired"`, KHÔNG flush câu đang nói dở (E4/E5). Đặt bằng thời gian còn lại của
@@ -40,7 +43,7 @@ PoC Soniox nội bộ (không kèm trong repo này).
   /402/429/400 ⇒ dừng luồng đó + toast. Sau lỗi, `sendAudio`/`finish` trên session đã chết ném
   `StateError` nên controller chuyển `feed()` sang buffer và `closeAll` dùng `allSettled`.
 - Route fail-CLOSED khi rate limit (60 request/giờ/phiên) không kiểm được (lỗi quyền lẫn lỗi hạ tầng):
-  503 `rate_limit_unavailable`, không gọi Soniox. Client báo lỗi rõ và reconnect backoff 3 lượt (1/2/4 s).
+  503 `rate_limit_unavailable`, không gọi Soniox. Client báo lỗi rõ và reconnect tối đa 3 lượt (chờ 1 s rồi 2 s giữa các lượt; không chờ sau lượt cuối) — cửa sổ ~3 s + thời gian request, nên RPC chớp lâu hơn thế giữa buổi thì luồng đó dừng thu tới khi tải lại trang.
 
 ## Endpoint detection (`<end>` token) — bắt buộc
 Phải bật `enable_endpoint_detection: true` và dùng token `<end>` do Soniox

@@ -103,7 +103,7 @@ lượt reconnect. Không còn renew định kỳ (xem `soniox-integration-notes
 - `handleDisconnected` có guard 2 lớp: `stopped` (chặn đóng chủ động tự trigger reconnect) +
   `conn !== this.canonical && conn !== this.en` (chặn disconnect/lỗi trễ từ connection đã bị swap
   ra bởi reconnect trước đó).
-- Retry: `reconnectWithBackoff` (`live-session-lifecycle.ts`) tối đa **3 lần**, backoff 1s/2s/4s,
+- Retry: `reconnectWithBackoff` (`live-session-lifecycle.ts`) tối đa **3 lần**, chờ 1s rồi 2s giữa các lượt (không chờ sau lượt cuối, tổng ~3s + thời gian request),
   xin cặp key MỚI mỗi lượt. Lỗi route không đáng thử lại (`cap_reached`, `invalid_session_status`,
   `not_found`, `email_not_confirmed`, `rate_limit_exceeded`) → bỏ cuộc ngay;
   `rate_limit_unavailable` (503, route fail-closed) và `soniox_key_failed` (502) vẫn backoff. Hết lượt
