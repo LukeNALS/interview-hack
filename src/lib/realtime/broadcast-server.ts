@@ -10,9 +10,10 @@ import { realtimeChannelName, type ServerEvent } from "@/types/events";
  * `channel.send` nếu REST lỗi. Lỗi broadcast KHÔNG throw — ingest (DB ghi
  * trước khi gọi hàm này) là nguồn sự thật, client bù qua backfill (SU T8).
  *
- * Broadcast public (không set `private`) — chưa có Realtime Authorization
- * RLS policy nào cấu hình cho `session:{id}`; xem Unresolved trong report
- * P05-BE (channel name = session UUID, độ khó đoán là lớp bảo vệ duy nhất).
+ * Broadcast PRIVATE (audit 2026-09-28 #4) — cả REST lẫn fallback đều gửi
+ * `private: true`; Realtime Authorization (0020) chỉ cho CHỦ phiên nhận, không
+ * ai ngoài service-role gửi được. Phải khớp với `subscribe-client.ts`: server
+ * private + client public (hoặc ngược lại) = client KHÔNG nhận event nào.
  */
 
 const BROADCAST_REST_PATH = "/realtime/v1/api/broadcast";
@@ -47,7 +48,7 @@ async function broadcastViaRest(channel: string, event: ServerEvent): Promise<bo
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        messages: [{ topic: channel, event: event.type, payload: event }],
+        messages: [{ topic: channel, event: event.type, payload: event, private: true }],
       }),
     });
 
@@ -69,7 +70,7 @@ async function broadcastViaRest(channel: string, event: ServerEvent): Promise<bo
 /** Fallback hiếm khi dùng — mở tạm 1 kết nối Realtime để gửi rồi đóng ngay, có timeout chặn treo function. */
 async function broadcastViaClient(channel: string, event: ServerEvent): Promise<void> {
   const supabase = createServiceRoleClient();
-  const rt = supabase.channel(channel, { config: { broadcast: { self: false } } });
+  const rt = supabase.channel(channel, { config: { private: true, broadcast: { self: false } } });
 
   await new Promise<void>((resolve) => {
     let settled = false;
