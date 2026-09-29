@@ -462,6 +462,23 @@ describe("checkRateLimit — fail-open khi RPC lỗi hạ tầng", () => {
     expect(decision).toEqual({ allowed: false, reason: "backend_denied" });
   });
 
+  test("test_check_rate_limit_when_permission_denied_closed_and_infra_open_infra_error_still_allows", async () => {
+    // Arrange — chiều ngược lại của 2 option độc lập: lỗi HẠ TẦNG theo onInfraError, không bị onPermissionDenied kéo theo
+    rateLimitRpcError = { message: "connection reset" };
+
+    // Act
+    const decision = await checkRateLimit({
+      key: "any:key",
+      windowSeconds: 3600,
+      limit: 10,
+      onPermissionDenied: "closed",
+      onInfraError: "open",
+    });
+
+    // Assert
+    expect(decision).toEqual({ allowed: true });
+  });
+
   test("test_check_rate_limit_when_permission_denied_open_and_infra_closed_permission_denied_still_allows", async () => {
     // Arrange — 2 option độc lập: lỗi QUYỀN theo onPermissionDenied, không bị onInfraError kéo theo
     rateLimitRpcError = { message: "permission denied for function bump_rate_limit", code: "42501" };

@@ -87,7 +87,7 @@ interface FakeFetchResponse {
 }
 
 let mintCount = 0;
-const fetchMock = vi.fn<(url: string, init: { body: string }) => Promise<FakeFetchResponse>>(async () => {
+const fetchMock = vi.fn<(url: string, init: { body: string; signal?: AbortSignal }) => Promise<FakeFetchResponse>>(async () => {
   // Chốt số thứ tự lúc GỌI — 2 mint chạy song song, đọc `mintCount` muộn (trong json()) sẽ ra 2 key trùng.
   const n = ++mintCount;
   return {
@@ -198,7 +198,9 @@ describe("POST /api/sessions/:id/soniox-key", () => {
 
   test("test_soniox_key_when_soniox_body_has_no_api_key_returns_502_soniox_key_failed", async () => {
     // Arrange — Soniox trả 200 nhưng body không có api_key
-    fetchMock.mockImplementation(async () => ({ ok: true, json: async () => ({}), text: async () => "" }));
+    // 2 mint song song ⇒ 2 lần `Once` (không dùng mockImplementation trần: sẽ rò sang ca sau nếu nâng vitest ≥ 3)
+    const emptyBody = async () => ({ ok: true, json: async () => ({}), text: async () => "" });
+    fetchMock.mockImplementationOnce(emptyBody).mockImplementationOnce(emptyBody);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     // Act
     const res = await POST(makeRequest(), makeCtx());
@@ -206,6 +208,48 @@ describe("POST /api/sessions/:id/soniox-key", () => {
     // Assert
     expect(res.status).toBe(502);
     expect(body.error.code).toBe("soniox_key_failed");
+  });
+
+  test("test_soniox_key_when_soniox_fetch_rejects_returns_502_soniox_key_failed_not_500", async () => {
+    // Arrange — mạng/timeout: fetch ném TypeError (không phải AppError) — trước đây rơi thành 500 internal_error
+    // nên client không nhận ra đó là lỗi dịch vụ cấp key
+    const networkDown = async (): Promise<FakeFetchResponse> => {
+      throw new TypeError("fetch failed");
+    };
+    fetchMock.mockImplementationOnce(networkDown).mockImplementationOnce(networkDown);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // Act
+    const res = await POST(makeRequest(), makeCtx());
+    const body = (await res.json()) as { error: { code: string } };
+    // Assert
+    expect(res.status).toBe(502);
+    expect(body.error.code).toBe("soniox_key_failed");
+  });
+
+  test("test_soniox_key_when_soniox_json_is_malformed_returns_502_soniox_key_failed", async () => {
+    // Arrange — 200 nhưng body không phải JSON
+    const badJson = async (): Promise<FakeFetchResponse> => ({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("Unexpected token <");
+      },
+      text: async () => "",
+    });
+    fetchMock.mockImplementationOnce(badJson).mockImplementationOnce(badJson);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // Act
+    const res = await POST(makeRequest(), makeCtx());
+    // Assert
+    expect(res.status).toBe(502);
+  });
+
+  test("test_soniox_key_mint_request_carries_abort_signal_so_a_hung_mint_cannot_hold_the_request", async () => {
+    // Arrange — mặc định beforeEach
+    // Act
+    await POST(makeRequest(), makeCtx());
+    // Assert — cả 2 lần mint đều có AbortSignal (timeout 10 s)
+    expect(fetchMock.mock.calls).toHaveLength(2);
+    for (const call of fetchMock.mock.calls) expect(call[1].signal).toBeInstanceOf(AbortSignal);
   });
 
   test("test_soniox_key_success_logs_mint_latency_without_key_material", async () => {

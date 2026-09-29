@@ -27,10 +27,16 @@ export function fatalToastMessage(kind: FatalKind): string | null {
   }
 }
 
-/** Toast khi reconnect bỏ cuộc (hết lượt backoff hoặc lỗi route không đáng thử lại). */
-export function giveUpToastMessage(label: string, err: unknown): string {
+/** Toast khi reconnect bỏ cuộc (hết lượt backoff hoặc lỗi route không đáng thử lại). `null` = không toast:
+ *  buổi đã hết giờ/kết thúc (cap countdown / endInterview tự lo) — báo "mất kết nối" lúc đó là sai nghĩa. */
+export function giveUpToastMessage(label: string, err: unknown): string | null {
+  const code = err instanceof ApiError ? err.code : undefined;
+  if (code === "cap_reached" || code === "invalid_session_status") return null;
   if (isKeyServiceUnavailable(err)) {
-    return `${KEY_SERVICE_UNAVAILABLE_MESSAGE} — đã dừng thu âm (${label}), transcript trước đó vẫn giữ nguyên`;
+    return `${KEY_SERVICE_UNAVAILABLE_MESSAGE} — đã dừng thu âm (${label}), hãy tải lại trang; transcript trước đó vẫn giữ nguyên`;
+  }
+  if (code === "rate_limit_exceeded") {
+    return `Vượt giới hạn xin khoá thu âm trong giờ — đã dừng thu âm (${label}), hãy kết thúc buổi và tải lại trang`;
   }
   return `Mất kết nối thu âm (${label}) — đã dừng, transcript trước đó vẫn giữ nguyên`;
 }

@@ -22,6 +22,9 @@ const SONIOX_MAX_SESSION_DURATION_SECONDS = 18000;
 // Duration đếm PER STREAM từ lúc connect (E4/E5): hết ⇒ server cắt cứng 403 temp_api_key_session_expired.
 // Đặt = thời gian còn lại của cap ⇒ vượt cap tối đa = TTL (key mint lúc T, mở trễ nhất T+TTL).
 const KEYS_PER_PAIR = 2;
+// Không để mint treo giữ request (và vòng reconnect backoff của client) tới khi platform ngắt; Node fetch đo 3,6–3,9 s
+// trên máy dev, 10 s chừa dư địa — P04 đo `soniox_ms` thật.
+const SONIOX_MINT_TIMEOUT_MS = 10_000;
 
 interface SonioxTempKeyResponse {
   api_key: string;
@@ -34,12 +37,27 @@ function sonioxKeyFailed(): AppError {
 
 async function fetchSonioxTempKey(params: { remainingSeconds: number; sessionId: string }): Promise<SonioxTempKeyResponse> {
   const { SONIOX_API_KEY } = getServerEnv();
+  try {
+    return await requestSonioxTempKey(SONIOX_API_KEY, params);
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    // Mạng/timeout/JSON hỏng: đừng để rơi thành 500 internal_error — client không nhận ra đó là lỗi dịch vụ cấp key.
+    console.error("[soniox-key] gọi Soniox thất bại", { error: err instanceof Error ? err.name : "unknown" });
+    throw sonioxKeyFailed();
+  }
+}
+
+async function requestSonioxTempKey(
+  apiKey: string,
+  params: { remainingSeconds: number; sessionId: string },
+): Promise<SonioxTempKeyResponse> {
   const res = await fetch(SONIOX_TEMP_KEY_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${SONIOX_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(SONIOX_MINT_TIMEOUT_MS),
     body: JSON.stringify({
       usage_type: "transcribe_websocket",
       expires_in_seconds: SONIOX_KEY_TTL_SECONDS,

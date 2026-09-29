@@ -278,6 +278,39 @@ test("test_reconnect_with_backoff_when_route_returns_rate_limit_unavailable_retr
   expect(onGiveUp).toHaveBeenCalledWith(routeError);
 });
 
+test("test_reconnect_with_backoff_when_should_continue_is_false_stops_without_minting_keys_or_giving_up", async () => {
+  // Arrange — controller đã stop/fatal hoặc pipeline đã dispose trước khi lượt thử bắt đầu
+  const getKeys = vi.fn().mockResolvedValue(pairKeys(1));
+  const reconnect = vi.fn();
+  const onGiveUp = vi.fn();
+
+  // Act
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp, shouldContinue: () => false });
+
+  // Assert — không mint key thật, không reconnect, không toast giả (onGiveUp)
+  expect(getKeys).not.toHaveBeenCalled();
+  expect(reconnect).not.toHaveBeenCalled();
+  expect(onGiveUp).not.toHaveBeenCalled();
+});
+
+test("test_reconnect_with_backoff_when_should_continue_turns_false_between_attempts_stops_retrying", async () => {
+  // Arrange — lượt 1 thất bại, trong lúc backoff user kết thúc buổi
+  let alive = true;
+  const getKeys = vi.fn().mockResolvedValue(pairKeys(1));
+  const reconnect = vi.fn().mockRejectedValue(new Error("down"));
+  const onGiveUp = vi.fn();
+  const delayFn = vi.fn(async () => {
+    alive = false;
+  });
+
+  // Act
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp, shouldContinue: () => alive }, { maxAttempts: 3, delayFn });
+
+  // Assert — dừng ở đầu lượt 2, không bỏ cuộc "có báo"
+  expect(reconnect).toHaveBeenCalledTimes(1);
+  expect(onGiveUp).not.toHaveBeenCalled();
+});
+
 // ===== M2 fix: closeAllStreamsOnce — idempotent, tránh double-close khi unmount ngay sau endInterview() =====
 
 function makeFakeStreamRuntime(overrides: {

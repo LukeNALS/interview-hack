@@ -47,7 +47,7 @@ test.afterAll(async () => {
 test("test_live_soniox_ws_drop_midsession_shows_degraded_then_restored_with_unbroken_seq", async ({ page }) => {
   // Arrange — key giả mang kịch bản `drop` để mock biết cắt socket sau 3 lượt. Key single-use: mock
   // từ chối key đã dùng bằng 401, nên reconnect mà tái dùng key cũ sẽ lộ ngay (đếm ở /stats bên dưới).
-  await stubSonioxKeyWithScenario(page, "drop");
+  const runId = await stubSonioxKeyWithScenario(page, "drop");
   const keyRequests: string[] = [];
   page.on("request", (req) => {
     if (req.method() === "POST" && /\/soniox-key$/.test(req.url())) keyRequests.push(req.url());
@@ -97,7 +97,8 @@ test("test_live_soniox_ws_drop_midsession_shows_degraded_then_restored_with_unbr
   // Assert — key single-use: lúc start 1 request (direct = 1 cặp), reconnect xin thêm cặp MỚI (≥ 2 request),
   // và mock KHÔNG phải từ chối key đã dùng lần nào (không tái dùng key cũ).
   expect(keyRequests.length).toBeGreaterThanOrEqual(2);
-  const stats = (await (await fetch(`http://127.0.0.1:${E2E_PORTS.sonioxMock}/stats`)).json()) as {
+  // Đếm THEO runId của chính spec này (không global) nên spec khác chạy song song không làm đỏ oan.
+  const stats = (await (await fetch(`http://127.0.0.1:${E2E_PORTS.sonioxMock}/stats?run=${runId}`)).json()) as {
     reusedKeyRejections: number;
   };
   expect(stats.reusedKeyRejections).toBe(0);

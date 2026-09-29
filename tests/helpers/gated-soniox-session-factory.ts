@@ -1,3 +1,4 @@
+import { RealtimeError } from "@soniox/client";
 import type { SonioxStreamController } from "@/hooks/use-soniox";
 import type { PairKeys, SonioxSessionFactory, SonioxSessionLike } from "@/lib/soniox/connection";
 
@@ -12,6 +13,8 @@ export interface GatedInstance {
   closed: boolean;
   handlers: Record<string, (...args: unknown[]) => void>;
   resolveConnect: () => void;
+  /** `connect()` bị từ chối (mạng, timeout 20 s của SDK...). */
+  rejectConnect: (err: Error) => void;
 }
 
 export function makeGatedSessionFactory() {
@@ -19,10 +22,12 @@ export function makeGatedSessionFactory() {
 
   const factory: SonioxSessionFactory = (_config, apiKey) => {
     let resolveConnect!: () => void;
-    const gate = new Promise<void>((resolve) => {
+    let rejectConnect!: (err: Error) => void;
+    const gate = new Promise<void>((resolve, reject) => {
       resolveConnect = resolve;
+      rejectConnect = reject;
     });
-    const record: GatedInstance = { apiKey, sentChunks: [], closed: false, handlers: {}, resolveConnect };
+    const record: GatedInstance = { apiKey, sentChunks: [], closed: false, handlers: {}, resolveConnect, rejectConnect };
     instances.push(record);
     const session: SonioxSessionLike = {
       async connect() {
@@ -71,10 +76,9 @@ export async function openImmediately(
   await opened;
 }
 
-/** Lỗi server Soniox như SDK 2.3.0 dựng (`RealtimeError`): `statusCode` + `raw` (payload thô). */
+/** Lỗi server Soniox dựng bằng `RealtimeError` THẬT của SDK (`statusCode` + `raw` payload thô) — SDK đổi tên
+ *  field thì test đỏ thay vì pass với object tự chế. */
 export function serverError(statusCode: number, rawErrorType?: string): Error {
-  return Object.assign(new Error(`soniox ${statusCode}`), {
-    statusCode,
-    raw: rawErrorType ? { error_code: statusCode, error_type: rawErrorType } : { error_code: statusCode },
-  });
+  const raw = rawErrorType ? { error_code: statusCode, error_type: rawErrorType } : { error_code: statusCode };
+  return new RealtimeError(`soniox ${statusCode}`, "realtime_error", statusCode, raw);
 }

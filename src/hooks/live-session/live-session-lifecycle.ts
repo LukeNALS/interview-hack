@@ -30,6 +30,9 @@ export interface ReconnectWithBackoffDeps {
   /** Hết lượt retry HOẶC lỗi không đáng thử lại — kèm lỗi cuối để caller chọn thông điệp; caller dừng
    *  capture luồng đó, giữ banner degraded. */
   onGiveUp: (err: unknown) => void;
+  /** Kiểm ĐẦU mỗi lượt: `false` (controller đã stop/fatal hoặc pipeline đã dispose) ⇒ dừng im lặng, KHÔNG xin
+   *  key (mint thật), KHÔNG `onGiveUp` (toast giả lên màn kế). Bỏ trống = luôn tiếp tục. */
+  shouldContinue?: () => boolean;
 }
 
 export interface ReconnectWithBackoffOptions {
@@ -54,6 +57,7 @@ export async function reconnectWithBackoff(
   } = opts;
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (deps.shouldContinue && !deps.shouldContinue()) return;
     try {
       await deps.reconnect(await deps.getKeys());
       return;

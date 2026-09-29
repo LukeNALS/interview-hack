@@ -12,11 +12,10 @@ export type SonioxScenario = "basic" | "drop";
 /**
  * Chặn route cấp key Soniox và nhét kịch bản + runId vào chính chuỗi key.
  *
- * Vì sao không dùng `stubSonioxKey` của `tests/helpers/auth.ts`: helper đó trả key
- * `e2e-fake-temp-key-<n>-…` → mock rơi về kịch bản `basic` + runId dùng chung
- * `anon`. Mock đếm số lần kết nối THEO runId để biết đâu là lần reconnect, nên
- * runId dùng chung sẽ khiến 2 spec chạy song song (hoặc 2 lần chạy liên tiếp, vì
- * `reuseExistingServer` giữ nguyên tiến trình mock) đọc nhầm bộ đếm của nhau.
+ * `stubSonioxKey` của `tests/helpers/auth.ts` uỷ quyền cho hàm này (kịch bản `basic`). Mock đếm số lần
+ * kết nối VÀ số lần từ chối key đã dùng THEO runId, nên mỗi lần stub phải có runId ngẫu nhiên riêng: runId
+ * dùng chung sẽ khiến 2 spec chạy song song (hoặc 2 lần chạy liên tiếp, vì `reuseExistingServer` giữ nguyên
+ * tiến trình mock) đọc nhầm bộ đếm của nhau và key trùng bị 401 giả.
  *
  * Mỗi lần gọi route trả CẶP key DUY NHẤT `e2e:<scenario>:<runId>:<n>:<canonical|en>` (key single-use):
  * mock parse runId KHÔNG gồm phần `<n>:…` nên bộ đếm reconnect vẫn theo runId, còn key đã dùng bị

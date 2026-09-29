@@ -218,3 +218,66 @@ describe("SonioxStreamController — lỗi server sau connect, KHÔNG thử lạ
     expect(onRestored).not.toHaveBeenCalled();
   });
 });
+
+describe("SonioxStreamController — dọn dẹp khi mở dở", () => {
+  test("test_soniox_stream_controller_open_when_one_connection_fails_closes_the_other_and_stays_inert", async () => {
+    // Arrange — canonical lên được, en timeout: open() ném, canonical WS mở mãi nếu không ai đóng
+    const onDegraded = vi.fn();
+    const { controller, instances } = makeController({ onDegraded });
+    const opening = controller.open(pairKeys("k1"));
+    const failure = expect(opening).rejects.toThrow("en connect timeout");
+    instances[0].resolveConnect();
+    instances[1].rejectConnect(new Error("en connect timeout"));
+
+    // Act
+    await failure;
+
+    // Assert — cả 2 connection bị đóng, và close() tự bắn `disconnected` KHÔNG kích hoạt degrade/reconnect
+    expect(instances.every((i) => i.closed)).toBe(true);
+    expect(onDegraded).not.toHaveBeenCalled();
+    expect(controller.isStopped).toBe(true);
+  });
+
+  test("test_soniox_stream_controller_reconnect_when_one_new_connection_fails_closes_both_new_connections", async () => {
+    // Arrange — mất kết nối rồi reconnect: pair mới lên dở
+    const onDegraded = vi.fn();
+    const { controller, instances } = makeController({ onDegraded });
+    await openImmediately(controller, pairKeys("k1"), instances);
+    instances[0].handlers["disconnected"]?.();
+    expect(onDegraded).toHaveBeenCalledTimes(1);
+    const reconnecting = controller.reconnect(pairKeys("k2"));
+    const failure = expect(reconnecting).rejects.toThrow("en connect timeout");
+
+    // Act
+    instances[2].resolveConnect();
+    instances[3].rejectConnect(new Error("en connect timeout"));
+    await failure;
+
+    // Assert — không rò socket của pair mới; pair cũ vẫn là hiện tại (caller retry với cặp key khác)
+    expect(instances[2].closed).toBe(true);
+    expect(instances[3].closed).toBe(true);
+    expect(controller.isStopped).toBe(false);
+    expect(onDegraded).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SonioxStreamController — chọn lỗi khi cả 2 connection của pair mới đều hỏng", () => {
+  test("test_soniox_stream_controller_new_pair_with_retry_and_fatal_errors_reports_the_fatal_one", async () => {
+    // Arrange — canonical mới nhận 401 (retry) nhưng en mới nhận 403 thiếu quyền (fatal)
+    const onFatal = vi.fn();
+    const { controller, instances } = makeController({ onFatal });
+    await openImmediately(controller, pairKeys("k1"), instances);
+    instances[0].handlers["disconnected"]?.();
+    const reconnecting = controller.reconnect(pairKeys("k2"));
+
+    // Act
+    instances[2].resolveConnect();
+    instances[2].handlers["error"]?.(serverError(401));
+    instances[3].resolveConnect();
+    instances[3].handlers["error"]?.(serverError(403));
+    await reconnecting;
+
+    // Assert — không che lỗi fatal bằng lỗi retry của connection kia (nếu che: thử lại vô ích rồi mới gặp fatal)
+    expect(onFatal).toHaveBeenCalledWith("forbidden", expect.anything());
+  });
+});

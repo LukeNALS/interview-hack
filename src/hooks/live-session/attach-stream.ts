@@ -126,14 +126,19 @@ export function createStreamAttacher(
         // tự reconnect với cặp key MỚI mỗi lượt, backoff giới hạn (KHÔNG áp dụng cho đóng chủ động —
         // controller tự lọc qua stopped/stale-connection guard trong use-soniox.ts).
         onDegraded: () => {
+          // Pipeline đã đóng (user rời màn/kết thúc buổi): controller có thể còn sống nếu attach hỏng giữa chừng —
+          // không banner, không mint key cho pipeline chết.
+          if (pipeline.disposed) return;
           banner.showDegraded();
           void reconnectWithBackoff({
             getKeys,
             reconnect: (newKeys) => controller.reconnect(newKeys),
+            shouldContinue: () => !pipeline.disposed && !controller.isStopped,
             onGiveUp: (err) => {
               pcmCapture?.stop();
               console.error("[soniox] reconnect bỏ cuộc", { label, code: (err as { code?: string } | null)?.code });
-              useSessionStore.getState().showToast(giveUpToastMessage(label, err));
+              const message = giveUpToastMessage(label, err);
+              if (message) useSessionStore.getState().showToast(message);
             },
           });
         },
@@ -153,9 +158,19 @@ export function createStreamAttacher(
       },
     });
 
-    await controller.open(keys);
+    // Tạo TRƯỚC open(): lỗi Soniox fatal đến giữa lúc open/addModule còn chạy gọi `pcmCapture.stop()` ⇒ đánh dấu
+    // stopped nên `start()` thành no-op (mic không bật mồ côi trong khi UI báo đã dừng).
     pcmCapture = new PcmWorkletCapture({ onChunk: (chunk) => controller.feed(chunk, Date.now()) });
-    await pcmCapture.start(mediaStream);
+    try {
+      await controller.open(keys);
+      await pcmCapture.start(mediaStream);
+    } catch (err) {
+      // Không lên được: controller CHƯA vào pipeline nên closeAllStreamsOnce không đóng nó — tự dọn để khỏi rò
+      // WebSocket/mic, rồi ném tiếp cho catch của bootstrap (toast + dispose).
+      pcmCapture.stop();
+      await controller.stop().catch(() => {});
+      throw err;
+    }
 
     const runtime: StreamRuntime = {
       label,

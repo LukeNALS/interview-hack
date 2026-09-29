@@ -186,7 +186,21 @@ export class SonioxStreamController {
 
   /** Mở cả 2 connection, mỗi connection 1 key single-use riêng — chờ cả 2 ready (§Architecture). */
   async open(keys: PairKeys): Promise<void> {
-    await openAllReady([this.canonical, this.en], [keys.canonical, keys.en]);
+    try {
+      await openAllReady([this.canonical, this.en], [keys.canonical, keys.en]);
+    } catch (err) {
+      // Mở dở (vd canonical lên, en timeout 20 s): connection đã lên không ai giữ ⇒ rò WebSocket. Set
+      // `stopped` TRƯỚC khi close để `disconnected` do chính close() bắn ra không kích hoạt reconnect.
+      this.stopped = true;
+      this.canonical.close();
+      this.en.close();
+      throw err;
+    }
+  }
+
+  /** Đã đóng (stop() hoặc lỗi không thử lại được) — caller ngoài (reconnect backoff) dùng để bỏ cuộc im lặng. */
+  get isStopped(): boolean {
+    return this.stopped;
   }
 
   /** Bơm 1 chunk PCM (từ pcm-worklet). Degraded -> buffer RAM (reconnect), không fan-out. */
@@ -262,7 +276,14 @@ export class SonioxStreamController {
   async reconnect(keys: PairKeys): Promise<void> {
     const newCanonical = this.createConnection("canonical");
     const newEn = this.createConnection("en");
-    await openAllReady([newCanonical, newEn], [keys.canonical, keys.en]);
+    try {
+      await openAllReady([newCanonical, newEn], [keys.canonical, keys.en]);
+    } catch (err) {
+      // Mở dở: connection đã lên không ai giữ (pair mới chưa phải hiện tại nên handler bỏ qua sự kiện của nó).
+      newCanonical.close();
+      newEn.close();
+      throw err;
+    }
     // Code review round 2 (NEW-1): stop() có thể xảy ra GIỮA lúc await ở trên đang chờ (endInterview()/
     // unmount trong lúc reconnectWithBackoff còn in-flight) — nếu vậy pair mới này không còn chủ sở hữu
     // nào (streamsRef.current đã bị clear), không được swap vào/bắn onRestored(); đóng ngay để tránh leak
@@ -274,7 +295,9 @@ export class SonioxStreamController {
     // Lỗi server đến từ pair MỚI trước khi swap (vd 401 ~230 ms sau connect, lúc connection kia còn đang
     // mở): handleError bỏ qua vì chưa phải connection hiện tại ⇒ kiểm ở đây. Chưa feed audio nào nên
     // chỉ cần close(). retry ⇒ ném để backoff xin cặp key MỚI; không thử lại được ⇒ báo, KHÔNG swap.
-    const dead = newCanonical.error ?? newEn.error;
+    const errors = [newCanonical.error, newEn.error].filter((e): e is Error => e !== null);
+    // Ưu tiên lỗi KHÔNG thử lại được (403/402/400...) để không che nó bằng lỗi retry của connection kia.
+    const dead = errors.find((e) => classifySonioxRealtimeError(e) !== "retry") ?? errors[0];
     if (dead) {
       newCanonical.close();
       newEn.close();

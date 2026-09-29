@@ -37,11 +37,14 @@ const hoisted = vi.hoisted(() => {
     keyCalls: 0,
     keysError: null as Error | null,
     captureGate: deferred<void>(),
-    controllers: [] as Array<{ handlers: Record<string, unknown> }>,
+    controllers: [] as Array<{ handlers: Record<string, unknown>; isStopped: boolean }>,
     opened: [] as Array<{ canonical: string; en: string }>,
     reconnected: [] as Array<{ canonical: string; en: string }>,
     onOpen: null as null | ((controller: { handlers: Record<string, unknown> }) => void),
     pcmStops: 0,
+    pcmCalls: [] as string[],
+    pcmStartError: null as Error | null,
+    controllerStops: 0,
     tracksStarted: 0,
     tracksStopped: 0,
   };
@@ -71,7 +74,11 @@ vi.mock("@/hooks/use-soniox", () => ({
     async reconnect(keys: { canonical: string; en: string }) {
       hoisted.reconnected.push(keys);
     }
-    async stop() {}
+    isStopped = false;
+    async stop() {
+      this.isStopped = true;
+      hoisted.controllerStops += 1;
+    }
     feed() {}
     getEpochConnMs() {
       return 0;
@@ -103,9 +110,13 @@ vi.mock("@/lib/audio/capture-online", () => ({
 
 vi.mock("@/lib/audio/pcm-worklet", () => ({
   PcmWorkletCapture: class {
-    async start() {}
+    async start() {
+      hoisted.pcmCalls.push("start");
+      if (hoisted.pcmStartError) throw hoisted.pcmStartError;
+    }
     stop() {
       hoisted.pcmStops += 1;
+      hoisted.pcmCalls.push("stop");
     }
   },
 }));
@@ -180,6 +191,9 @@ beforeEach(() => {
   hoisted.reconnected = [];
   hoisted.onOpen = null;
   hoisted.pcmStops = 0;
+  hoisted.pcmCalls = [];
+  hoisted.pcmStartError = null;
+  hoisted.controllerStops = 0;
   hoisted.tracksStarted = 0;
   hoisted.tracksStopped = 0;
   useSessionStore.getState().patch({ toast: "" });
@@ -337,5 +351,78 @@ test("test_live_session_fatal_forbidden_stops_pcm_and_shows_access_denied_toast"
   // Assert — khác session_expired: PHẢI có toast, không được chết câm
   expect(hoisted.pcmStops).toBe(pcmStopsBefore + 1);
   expect(useSessionStore.getState().toast).toContain("từ chối quyền truy cập");
+  view.unmount();
+});
+
+test("test_live_session_pcm_start_failure_stops_the_orphan_controller_and_shows_mic_error", async () => {
+  // Arrange — Soniox mở được nhưng worklet lỗi (addModule/AudioContext): controller CHƯA vào pipeline nên
+  // closeAllStreamsOnce không đóng nó — nếu attach không tự dọn thì 2 WebSocket rò tới hết max_session_duration
+  hoisted.pcmStartError = new Error("addModule failed");
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+
+  // Act
+  await flushAsync();
+
+  // Assert — controller bị stop, mic vừa bật được trả sạch, toast đúng nguyên nhân (lỗi mic)
+  expect(hoisted.opened).toHaveLength(1);
+  expect(hoisted.controllerStops).toBeGreaterThanOrEqual(1);
+  expect(hoisted.tracksStopped).toBe(hoisted.tracksStarted);
+  expect(useSessionStore.getState().toast).toContain("Không bật được micro");
+  view.unmount();
+});
+
+test("test_live_session_fatal_during_open_stops_pcm_before_it_starts", async () => {
+  // Arrange — lỗi fatal (403 thiếu quyền) đến TRONG lúc open() còn chạy. pcmCapture phải tồn tại từ trước
+  // open() để `stop()` đánh dấu stopped ⇒ `start()` (thật) thành no-op, mic không bật mồ côi.
+  hoisted.onOpen = (controller) => (controller.handlers as FakeController["handlers"]).onFatal?.("forbidden", new Error("x"));
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+
+  // Act
+  await flushAsync();
+
+  // Assert — `stop` xảy ra TRƯỚC `start`
+  expect(hoisted.pcmCalls.indexOf("stop")).toBeGreaterThanOrEqual(0);
+  expect(hoisted.pcmCalls.indexOf("stop")).toBeLessThan(hoisted.pcmCalls.indexOf("start"));
+  view.unmount();
+});
+
+test("test_live_session_degraded_after_pipeline_disposed_does_not_mint_keys_or_leak_lost_banner", async () => {
+  // Arrange — stream chạy bình thường (1 cặp key), rồi user rời màn live
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+  await flushAsync();
+  const handlers = handlersOf(0);
+  expect(hoisted.keyCalls).toBe(1);
+  view.unmount();
+  useSessionStore.getState().patch({ banner: null });
+
+  // Act — controller còn sót một sự kiện rớt kết nối sau khi pipeline đã đóng
+  act(() => handlers.onDegraded?.());
+  await flushAsync();
+
+  // Assert — không mint key thật cho pipeline chết, không reconnect, và banner "mất kết nối" (field TOÀN CỤC
+  // trong session-store) không rò sang màn kế tiếp
+  expect(hoisted.keyCalls).toBe(1);
+  expect(hoisted.reconnected).toEqual([]);
+  expect(useSessionStore.getState().banner).toBeNull();
+});
+
+test("test_live_session_reconnect_stops_silently_when_controller_already_stopped", async () => {
+  // Arrange — controller đã stop/fatal nhưng còn một sự kiện degrade trễ
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+  await flushAsync();
+  hoisted.controllers[0].isStopped = true;
+
+  // Act
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+
+  // Assert — không xin key, không reconnect, không toast "mất kết nối" giả
+  expect(hoisted.keyCalls).toBe(1);
+  expect(hoisted.reconnected).toEqual([]);
+  expect(useSessionStore.getState().toast).toBe("");
   view.unmount();
 });

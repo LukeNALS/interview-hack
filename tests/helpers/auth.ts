@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { stubSonioxKeyWithScenario } from "../mocks/e2e-support";
 import { TEST_PASSWORD } from "./seed";
 
 /**
@@ -17,23 +18,12 @@ export async function loginAs(page: Page, email: string): Promise<void> {
 }
 
 /**
- * Chặn route cấp key Soniox. Route thật (`/api/sessions/[id]/soniox-key`) gọi
- * `https://api.soniox.com/v1/auth/temporary-api-key` bằng URL HARDCODE phía server
- * (route.ts) nên không override được bằng env — chỉ chặn được ở tầng browser.
- * Trả CẶP key giả DUY NHẤT mỗi lần gọi (như route thật: 2 key single-use): mock WS server
- * từ chối key đã dùng bằng 401 như Soniox thật, nên key cố định sẽ chết ở lần mở thứ hai.
+ * Chặn route cấp key Soniox (kịch bản `basic`). Route thật (`/api/sessions/[id]/soniox-key`) gọi
+ * `https://api.soniox.com/v1/auth/temporary-api-key` bằng URL HARDCODE phía server nên không override
+ * được bằng env — chỉ chặn được ở tầng browser. Uỷ quyền cho `stubSonioxKeyWithScenario`: mỗi lần gọi
+ * trả CẶP key giả DUY NHẤT gắn runId ngẫu nhiên (như route thật: 2 key single-use). Mock WS server từ chối
+ * key đã dùng bằng 401 như Soniox thật, nên key trùng giữa các stub/spec chạy song song sẽ bị 401 giả.
  */
 export async function stubSonioxKey(page: Page): Promise<void> {
-  let calls = 0;
-  await page.route("**/api/sessions/*/soniox-key", async (route) => {
-    calls += 1;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        keys: [`e2e-fake-temp-key-${calls}-canonical`, `e2e-fake-temp-key-${calls}-en`],
-        expires_at: new Date(Date.now() + 60_000).toISOString(),
-      }),
-    });
-  });
+  await stubSonioxKeyWithScenario(page, "basic");
 }
