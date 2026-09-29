@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { SonioxConnection, type SonioxSessionFactory, type SonioxSessionLike } from "@/lib/soniox/connection";
 import { openAllReady, fanOutChunk, closeAll } from "@/lib/soniox/fanout";
 import type { SttSessionConfig } from "@soniox/client";
@@ -82,20 +82,51 @@ describe("SonioxConnection — epoch_conn tracking", () => {
   });
 });
 
+describe("SonioxConnection — lỗi server sau connect", () => {
+  test("test_soniox_connection_error_event_is_recorded_and_forwarded_to_handler", async () => {
+    // Arrange
+    const { factory, instances } = makeFakeSessionFactory();
+    const conn = new SonioxConnection({ config: DUMMY_CONFIG, label: "test", sessionFactory: factory });
+    const seen: Error[] = [];
+    conn.setHandlers({ onError: (err) => seen.push(err) });
+    await conn.open("key");
+    expect(conn.error).toBeNull();
+
+    // Act — SDK phát `error` (vd 401 key single-use dùng lại) rồi tự dọn session
+    const err = Object.assign(new Error("Invalid or expired temporary API key"), { statusCode: 401 });
+    instances[0].handlers["error"]?.(err);
+
+    // Assert — controller đọc được lỗi trên pair CHƯA swap; handler vẫn được gọi
+    expect(conn.error).toBe(err);
+    expect(seen).toEqual([err]);
+  });
+});
+
 describe("fanout — open all ready + fan out chunk", () => {
-  test("test_fanout_open_all_ready_opens_every_connection_before_resolving", async () => {
+  test("test_fanout_open_all_ready_opens_every_connection_with_its_own_key_before_resolving", async () => {
     // Arrange
     const { factory, instances } = makeFakeSessionFactory();
     const connA = new SonioxConnection({ config: DUMMY_CONFIG, label: "a", sessionFactory: factory });
     const connB = new SonioxConnection({ config: DUMMY_CONFIG, label: "b", sessionFactory: factory });
 
     // Act
-    await openAllReady([connA, connB], "shared-key");
+    await openAllReady([connA, connB], ["key-a", "key-b"]);
 
-    // Assert
+    // Assert — key single-use: mỗi connection một key riêng, đúng thứ tự
     expect(instances).toHaveLength(2);
     expect(instances.every((i) => i.connected)).toBe(true);
-    expect(instances.every((i) => i.apiKey === "shared-key")).toBe(true);
+    expect(instances.map((i) => i.apiKey)).toEqual(["key-a", "key-b"]);
+  });
+
+  test("test_fanout_open_all_ready_when_key_count_mismatches_throws_without_opening_any", async () => {
+    // Arrange
+    const { factory, instances } = makeFakeSessionFactory();
+    const connA = new SonioxConnection({ config: DUMMY_CONFIG, label: "a", sessionFactory: factory });
+    const connB = new SonioxConnection({ config: DUMMY_CONFIG, label: "b", sessionFactory: factory });
+
+    // Act + Assert
+    await expect(openAllReady([connA, connB], ["only-one-key"])).rejects.toThrow("2 connection nhưng 1 key");
+    expect(instances).toHaveLength(0);
   });
 
   test("test_fanout_chunk_sends_identical_chunk_to_every_connection", async () => {
@@ -103,7 +134,7 @@ describe("fanout — open all ready + fan out chunk", () => {
     const { factory, instances } = makeFakeSessionFactory();
     const connA = new SonioxConnection({ config: DUMMY_CONFIG, label: "a", sessionFactory: factory });
     const connB = new SonioxConnection({ config: DUMMY_CONFIG, label: "b", sessionFactory: factory });
-    await openAllReady([connA, connB], "key");
+    await openAllReady([connA, connB], ["key-a", "key-b"]);
     const chunk = new Uint8Array([1, 2, 3]);
 
     // Act
@@ -118,7 +149,7 @@ describe("fanout — open all ready + fan out chunk", () => {
     // Arrange
     const { factory, instances } = makeFakeSessionFactory();
     const connA = new SonioxConnection({ config: DUMMY_CONFIG, label: "a", sessionFactory: factory });
-    await openAllReady([connA], "key");
+    await openAllReady([connA], ["key"]);
 
     // Act
     await closeAll([connA]);
@@ -126,5 +157,21 @@ describe("fanout — open all ready + fan out chunk", () => {
     // Assert
     expect(instances[0].finished).toBe(true);
     expect(instances[0].closed).toBe(true);
+  });
+
+  test("test_fanout_close_all_when_one_connection_finish_rejects_still_closes_every_connection", async () => {
+    // Arrange — connection A đã chết vì lỗi server (SDK ném StateError ở finish()), B còn sống
+    const { factory, instances } = makeFakeSessionFactory();
+    const connA = new SonioxConnection({ config: DUMMY_CONFIG, label: "a", sessionFactory: factory });
+    const connB = new SonioxConnection({ config: DUMMY_CONFIG, label: "b", sessionFactory: factory });
+    await openAllReady([connA, connB], ["key-a", "key-b"]);
+    vi.spyOn(connA, "finish").mockRejectedValue(new Error('Cannot finish: session is in "error" state'));
+
+    // Act
+    await closeAll([connA, connB]);
+
+    // Assert — WebSocket của B không được rò dù finish() của A reject
+    expect(instances[0].closed).toBe(true);
+    expect(instances[1].closed).toBe(true);
   });
 });

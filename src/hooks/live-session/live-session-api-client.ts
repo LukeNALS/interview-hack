@@ -1,3 +1,4 @@
+import type { PairKeys } from "@/lib/soniox/connection";
 import {
   IngestRateLimitedError,
   IngestSessionEndedError,
@@ -5,11 +6,15 @@ import {
 } from "@/lib/transcript/ingest-queue";
 import { ApiError, fetchJson } from "../use-session";
 
-export async function fetchSonioxKey(sessionId: string): Promise<{ key: string; expiresAt: number }> {
+/** Xin 1 CẶP key single-use (canonical + en) cho 1 luồng audio — mỗi start/reconnect gọi lại để lấy cặp
+ *  MỚI. Route cũ (1 key) hoặc 2 key trùng nhau ⇒ ném, KHÔNG dùng chung 1 key cho 2 connection (⇒ 401). */
+export async function fetchSonioxPairKeys(sessionId: string): Promise<PairKeys> {
   const res = await fetchJson<{ keys: string[]; expires_at: string }>(`/api/sessions/${sessionId}/soniox-key`, {
     method: "POST",
   });
-  return { key: res.keys[0], expiresAt: Date.parse(res.expires_at) };
+  const [canonical, en] = res.keys ?? [];
+  if (!canonical || !en || canonical === en) throw new Error("soniox-key phải trả 2 key khác nhau (canonical + en)");
+  return { canonical, en };
 }
 
 /** Xin gợi ý TRẢ LỜI sau câu hỏi của người phỏng vấn — best-effort, caller (suggestion-trigger) nuốt mọi lỗi. */

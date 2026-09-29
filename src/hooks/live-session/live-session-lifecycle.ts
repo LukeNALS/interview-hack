@@ -1,3 +1,17 @@
+import type { PairKeys } from "@/lib/soniox/connection";
+import { ApiError } from "../use-session";
+
+/** Mã lỗi route soniox-key KHÔNG đáng thử lại — xin key mới cũng vô ích (buổi đã hết/không hợp lệ, user
+ *  vượt hạn). `rate_limit_unavailable` (503, route fail-closed khi rate-limit lỗi) và `soniox_key_failed`
+ *  (502) là lỗi thoáng qua ⇒ vẫn đi backoff. */
+const NON_RETRYABLE_KEY_ERROR_CODES = new Set([
+  "cap_reached",
+  "invalid_session_status",
+  "not_found",
+  "email_not_confirmed",
+  "rate_limit_exceeded",
+]);
+
 /** M3 fix: flush hàng đợi ingest TRƯỚC khi điều hướng khỏi màn live (mọi đường kết thúc buổi:
  *  thủ công/cap auto-stop/409 session_ended) — timeout ngắn (default 3s) để không treo
  *  navigate vô thời hạn nếu mạng đơ đúng lúc flush cuối. */
@@ -10,11 +24,12 @@ export async function flushIngestQueueBeforeEnd(
 }
 
 export interface ReconnectWithBackoffDeps {
-  /** Key hiện có (KHÔNG ép renew toàn cục — 1 stream rớt sóng không có nghĩa key hết hạn). */
-  getApiKey: () => string | null;
-  reconnect: (apiKey: string) => Promise<void>;
-  /** Hết lượt retry — caller dừng capture luồng đó, giữ banner degraded. */
-  onGiveUp: () => void;
+  /** Cặp key MỚI mỗi lượt — key single-use, key đã dùng ⇒ 401 sau connect. */
+  getKeys: () => Promise<PairKeys>;
+  reconnect: (keys: PairKeys) => Promise<void>;
+  /** Hết lượt retry HOẶC lỗi không đáng thử lại — kèm lỗi cuối để caller chọn thông điệp; caller dừng
+   *  capture luồng đó, giữ banner degraded. */
+  onGiveUp: (err: unknown) => void;
 }
 
 export interface ReconnectWithBackoffOptions {
@@ -25,9 +40,9 @@ export interface ReconnectWithBackoffOptions {
   delayFn?: (ms: number) => Promise<void>;
 }
 
-/** C1 fix: gọi `controller.reconnect()` với retry backoff giới hạn — thành công thì dừng ngay
- *  (banner restored đã tự bắn TRONG `SonioxStreamController.reconnect()`); hết `maxAttempts`
- *  thì gọi `onGiveUp()` đúng 1 lần, KHÔNG loop vô hạn. */
+/** C1 fix: xin cặp key mới rồi gọi `controller.reconnect()` với retry backoff giới hạn — thành công thì
+ *  dừng ngay (banner restored đã tự bắn TRONG `SonioxStreamController.reconnect()`); hết `maxAttempts`
+ *  hoặc gặp lỗi route không đáng thử lại thì gọi `onGiveUp(err)` đúng 1 lần, KHÔNG loop vô hạn. */
 export async function reconnectWithBackoff(
   deps: ReconnectWithBackoffDeps,
   opts: ReconnectWithBackoffOptions = {},
@@ -37,17 +52,17 @@ export async function reconnectWithBackoff(
     backoffMs = (attempt) => 1000 * 2 ** (attempt - 1),
     delayFn = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   } = opts;
+  let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const apiKey = deps.getApiKey();
-    if (apiKey) {
-      try {
-        await deps.reconnect(apiKey);
-        return;
-      } catch {
-        // rớt tiếp trong lúc mở lại -> thử lại theo backoff bên dưới
-      }
+    try {
+      await deps.reconnect(await deps.getKeys());
+      return;
+    } catch (err) {
+      lastError = err;
+      if (err instanceof ApiError && NON_RETRYABLE_KEY_ERROR_CODES.has(err.code)) return deps.onGiveUp(err);
+      // xin key/mở lại hỏng (mạng, 503, 401 sau connect) -> thử lại theo backoff bên dưới
     }
     if (attempt < maxAttempts) await delayFn(backoffMs(attempt));
   }
-  deps.onGiveUp();
+  deps.onGiveUp(lastError);
 }

@@ -9,6 +9,7 @@ import type { useConnectionBanner } from "../use-connection-banner";
 import { postAnswerHint, postUtterancesBatch } from "./live-session-api-client";
 import { createRealtimeHandlers } from "./live-session-realtime";
 import { createSuggestionTrigger } from "./suggestion-trigger";
+import { isKeyServiceUnavailable, KEY_SERVICE_UNAVAILABLE_MESSAGE } from "./soniox-error-messages";
 import { handleSeqGap, resolveT0LocalMs } from "./session-timeline";
 
 export interface BootstrapLivePipelineDeps {
@@ -89,6 +90,10 @@ export function bootstrapLivePipeline(
     } catch (err) {
       if (err instanceof TabAudioTrackMissingError) {
         useSessionStore.getState().showToast(err.message);
+      } else if (isKeyServiceUnavailable(err)) {
+        // Lỗi xin key (503 rate_limit_unavailable / 502): không phải lỗi mic — đừng báo "Không bật được micro".
+        console.error("[soniox] xin key lúc start thất bại", { code: (err as { code?: string }).code });
+        useSessionStore.getState().showToast(KEY_SERVICE_UNAVAILABLE_MESSAGE);
       } else {
         useSessionStore.getState().showToast("Không bật được micro/chia sẻ âm thanh — thử lại");
       }

@@ -70,7 +70,7 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       sessionFactory: factory,
       handlers: { onCanonicalFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — token thường (KHÔNG có `<end>`, đúng như SDK sau filterSpecialTokens),
     // rồi SDK bắn `endpoint` báo hết câu.
@@ -97,7 +97,7 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       sessionFactory: factory,
       handlers: { onEnFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — connection `en` (one_way -> en) nhận CẢ token gốc LẪN token dịch:
     // accumulator chốt theo `original`, `textEn` lấy từ nhánh `translation`.
@@ -122,7 +122,7 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       sessionFactory: factory,
       handlers: { onCanonicalFinal, onPartial },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — KHÔNG bắn `endpoint`.
     instances[CANONICAL].handlers["token"]?.(token("chưa hết câu"));
@@ -142,7 +142,7 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       sessionFactory: factory,
       handlers: { onCanonicalFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act
     instances[CANONICAL].handlers["endpoint"]?.();
@@ -161,7 +161,7 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       sessionFactory: factory,
       handlers: { onCanonicalFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act
     instances[CANONICAL].handlers["token"]?.(token("câu một"));

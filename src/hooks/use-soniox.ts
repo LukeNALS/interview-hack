@@ -1,8 +1,9 @@
 "use client";
 
 import type { RealtimeToken } from "@soniox/client";
+import { classifySonioxRealtimeError, type FatalKind } from "@/lib/soniox/classify-realtime-error";
 import { buildSonioxConfigs, type SonioxCaptureMode } from "@/lib/soniox/config";
-import { SonioxConnection, type SonioxSessionFactory } from "@/lib/soniox/connection";
+import { SonioxConnection, type PairKeys, type SonioxSessionFactory } from "@/lib/soniox/connection";
 import { closeAll, fanOutChunk, openAllReady } from "@/lib/soniox/fanout";
 import { epochConnForReplay, ReconnectBuffer } from "@/lib/soniox/reconnect";
 
@@ -128,6 +129,10 @@ export interface SonioxStreamHandlers {
   onEnFinal?: (segment: EnSegment) => void;
   onDegraded?: () => void;
   onRestored?: () => void;
+  /** Lỗi server KHÔNG thử lại được (hết duration/thiếu quyền/hết hạn mức/cấu hình) — controller đã tự
+   *  đóng cả cặp và chỉ báo ĐÚNG MỘT LẦN; caller dừng thu âm + báo user. */
+  onFatal?: (kind: FatalKind, err: Error) => void;
+  /** Mọi lỗi từ SDK (kể cả connection cũ) — chỉ để log; phân loại xảy ra trong controller. */
   onError?: (err: Error) => void;
 }
 
@@ -145,7 +150,8 @@ export class SonioxStreamController {
   private readonly enAcc = new TokenSegmentAccumulator();
   private readonly reconnectBuffer = new ReconnectBuffer();
   private degraded = false;
-  /** true khi đóng chủ động (stop()) đang/đã chạy — chặn onDisconnected trigger reconnect (C1 fix). */
+  /** true khi đóng chủ động (stop()) HOẶC sau lỗi không thử lại được (reportFatal) — chặn onDisconnected
+   *  trigger reconnect (C1 fix) và làm `onFatal` chỉ bắn 1 lần dù cả 2 connection cùng lỗi. */
   private stopped = false;
 
   constructor(opts: {
@@ -173,14 +179,14 @@ export class SonioxStreamController {
       onEndpoint: () => this.handleEndpoint(kind),
       onDisconnected: () => this.handleDisconnected(conn),
       onConnected: () => this.handleConnected(),
-      onError: (err) => this.handlers.onError?.(err),
+      onError: (err) => this.handleError(conn, err),
     });
     return conn;
   }
 
-  /** Mở cả 2 connection với apiKey — chờ cả 2 ready (§Architecture). */
-  async open(apiKey: string): Promise<void> {
-    await openAllReady([this.canonical, this.en], apiKey);
+  /** Mở cả 2 connection, mỗi connection 1 key single-use riêng — chờ cả 2 ready (§Architecture). */
+  async open(keys: PairKeys): Promise<void> {
+    await openAllReady([this.canonical, this.en], [keys.canonical, keys.en]);
   }
 
   /** Bơm 1 chunk PCM (từ pcm-worklet). Degraded -> buffer RAM (reconnect), không fan-out. */
@@ -198,18 +204,47 @@ export class SonioxStreamController {
   }
 
   /** `conn` = wrapper vừa rớt — bỏ qua nếu: (a) đang/đã stop() chủ động, hoặc (b) `conn` không
-   *  còn là canonical/en HIỆN TẠI (đã bị swap ra do renew()/reconnect() trước đó, đóng 1s sau
+   *  còn là canonical/en HIỆN TẠI (đã bị swap ra do reconnect() trước đó, đóng 1s sau
    *  overlap window — SDK có thể tự bắn "disconnected" khi close() dù là đóng chủ động, C1/M2 fix). */
   private handleDisconnected(conn: SonioxConnection): void {
     if (this.stopped) return;
     if (conn !== this.canonical && conn !== this.en) return;
+    this.markDegraded();
+  }
+
+  /** Idempotent: `disconnected` + `error` (ConnectionError) cùng đến khi WS rớt, chỉ báo 1 lần. */
+  private markDegraded(): void {
     if (this.degraded) return;
     this.degraded = true;
     this.handlers.onDegraded?.();
   }
 
+  /**
+   * Lỗi server sau connect. SDK 2.3.0 chỉ bắn `error` (KHÔNG `disconnected`) rồi tự dọn session nên phải
+   * phân loại ở đây, nếu không stream chết câm. Bỏ qua khi đã stop (kể cả sau fatal) hoặc `conn` không phải
+   * connection HIỆN TẠI (pair cũ đã swap ra; pair mới chưa swap do reconnect() tự kiểm `conn.error`).
+   * `retry` đi chung đường `disconnected` ⇒ onDegraded ⇒ reconnect với cặp key mới.
+   */
+  private handleError(conn: SonioxConnection, err: Error): void {
+    this.handlers.onError?.(err);
+    if (this.stopped) return;
+    if (conn !== this.canonical && conn !== this.en) return;
+    const kind = classifySonioxRealtimeError(err);
+    if (kind === "retry") this.markDegraded();
+    else this.reportFatal(kind, err);
+  }
+
+  /** Lỗi không thử lại được: `stopped` chặn reconnect + mọi lỗi/ngắt về sau (nên chỉ báo 1 lần), feed()
+   *  chuyển sang buffer (không ném StateError trên session đã chết), đóng cả cặp best-effort. */
+  private reportFatal(kind: FatalKind, err: Error): void {
+    this.stopped = true;
+    this.degraded = true;
+    void closeAll([this.canonical, this.en]).catch(() => {});
+    this.handlers.onFatal?.(kind, err);
+  }
+
   private handleConnected(): void {
-    // no-op riêng — reconnect()/renew() tự set degraded=false sau khi pair mới ready.
+    // no-op riêng — reconnect() tự set degraded=false sau khi pair mới ready.
   }
 
   /**
@@ -224,16 +259,28 @@ export class SonioxStreamController {
    * giữ đúng thứ tự chunk (kể cả chunk tới muộn trong lúc await) + epoch_conn = capture_ts chunk
    * ĐẦU TIÊN (từ trước khi reconnect() được gọi, không đổi).
    */
-  async reconnect(apiKey: string): Promise<void> {
+  async reconnect(keys: PairKeys): Promise<void> {
     const newCanonical = this.createConnection("canonical");
     const newEn = this.createConnection("en");
-    await openAllReady([newCanonical, newEn], apiKey);
+    await openAllReady([newCanonical, newEn], [keys.canonical, keys.en]);
     // Code review round 2 (NEW-1): stop() có thể xảy ra GIỮA lúc await ở trên đang chờ (endInterview()/
     // unmount trong lúc reconnectWithBackoff còn in-flight) — nếu vậy pair mới này không còn chủ sở hữu
     // nào (streamsRef.current đã bị clear), không được swap vào/bắn onRestored(); đóng ngay để tránh leak
     // WebSocket (đốt quota Soniox), không đụng buffer/degraded (stop() đã tự lo phần đó).
     if (this.stopped) {
       await closeAll([newCanonical, newEn]);
+      return;
+    }
+    // Lỗi server đến từ pair MỚI trước khi swap (vd 401 ~230 ms sau connect, lúc connection kia còn đang
+    // mở): handleError bỏ qua vì chưa phải connection hiện tại ⇒ kiểm ở đây. Chưa feed audio nào nên
+    // chỉ cần close(). retry ⇒ ném để backoff xin cặp key MỚI; không thử lại được ⇒ báo, KHÔNG swap.
+    const dead = newCanonical.error ?? newEn.error;
+    if (dead) {
+      newCanonical.close();
+      newEn.close();
+      const kind = classifySonioxRealtimeError(dead);
+      if (kind === "retry") throw dead;
+      this.reportFatal(kind, dead);
       return;
     }
     const buffered = this.reconnectBuffer.drain();
@@ -246,19 +293,6 @@ export class SonioxStreamController {
     this.swapConnections(newCanonical, newEn);
     this.degraded = false;
     this.handlers.onRestored?.();
-  }
-
-  /** Renew key TTL-120s (chưa mất kết nối) — mở pair mới overlap 1s, epoch_conn tự rebase bình thường (không set thủ công). */
-  async renew(apiKey: string): Promise<void> {
-    const newCanonical = this.createConnection("canonical");
-    const newEn = this.createConnection("en");
-    await openAllReady([newCanonical, newEn], apiKey);
-    // Cùng shape race với NEW-1 (xem reconnect() ở trên) — stop() có thể xảy ra giữa await này.
-    if (this.stopped) {
-      await closeAll([newCanonical, newEn]);
-      return;
-    }
-    this.swapConnections(newCanonical, newEn);
   }
 
   private swapConnections(newCanonical: SonioxConnection, newEn: SonioxConnection): void {

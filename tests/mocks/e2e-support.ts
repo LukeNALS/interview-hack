@@ -13,23 +13,29 @@ export type SonioxScenario = "basic" | "drop";
  * Chặn route cấp key Soniox và nhét kịch bản + runId vào chính chuỗi key.
  *
  * Vì sao không dùng `stubSonioxKey` của `tests/helpers/auth.ts`: helper đó trả key
- * cố định `e2e-fake-temp-key` → mock rơi về kịch bản `basic` + runId dùng chung
+ * `e2e-fake-temp-key-<n>-…` → mock rơi về kịch bản `basic` + runId dùng chung
  * `anon`. Mock đếm số lần kết nối THEO runId để biết đâu là lần reconnect, nên
  * runId dùng chung sẽ khiến 2 spec chạy song song (hoặc 2 lần chạy liên tiếp, vì
  * `reuseExistingServer` giữ nguyên tiến trình mock) đọc nhầm bộ đếm của nhau.
+ *
+ * Mỗi lần gọi route trả CẶP key DUY NHẤT `e2e:<scenario>:<runId>:<n>:<canonical|en>` (key single-use):
+ * mock parse runId KHÔNG gồm phần `<n>:…` nên bộ đếm reconnect vẫn theo runId, còn key đã dùng bị
+ * từ chối 401 như Soniox thật.
  *
  * Route thật gọi `https://api.soniox.com/...` bằng URL hardcode phía server nên
  * chỉ chặn được ở tầng browser (xem `src/app/api/sessions/[id]/soniox-key/route.ts`).
  */
 export async function stubSonioxKeyWithScenario(page: Page, scenario: SonioxScenario): Promise<string> {
   const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  let calls = 0;
   await page.route("**/api/sessions/*/soniox-key", async (route) => {
+    calls += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        keys: [`e2e:${scenario}:${runId}`],
-        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        keys: [`e2e:${scenario}:${runId}:${calls}:canonical`, `e2e:${scenario}:${runId}:${calls}:en`],
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
       }),
     });
   });

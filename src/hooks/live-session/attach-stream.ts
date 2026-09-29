@@ -1,5 +1,6 @@
 import { formatElapsed } from "@/components/live/live-utils";
 import { PcmWorkletCapture } from "@/lib/audio/pcm-worklet";
+import type { PairKeys } from "@/lib/soniox/connection";
 import { AlignBuffer, type AlignedUtterance } from "@/lib/transcript/align";
 import type { IngestUtterancePayload } from "@/lib/transcript/ingest-queue";
 import { buildClientUtteranceId, normalizeToSessionAxis, type StreamLabel } from "@/lib/transcript/utterance-builder";
@@ -8,19 +9,21 @@ import type { Speaker } from "@/types/events";
 import { closeAllStreamsOnce, type LivePipeline, type StreamRuntime } from "../live-pipeline";
 import { SonioxStreamController, type CanonicalSegment, type EnSegment } from "../use-soniox";
 import { reconnectWithBackoff } from "./live-session-lifecycle";
+import { fatalToastMessage, giveUpToastMessage } from "./soniox-error-messages";
 import { resolveDirectSpeaker, upsertUtterance } from "./utterance-mapping";
 import type { StartLiveCaptureDeps } from "./start-capture";
 
-/** Dựng hàm `attach` cho một buổi capture: mở 1 stream Soniox + PCM worklet, nối align buffer,
- *  đăng ký runtime vào pipeline NGAY khi mở được (BUG #3) và cắm các handler
- *  canonical/en/partial/degraded. Tách khỏi `start-capture.ts` chỉ để giữ mốc 200 dòng/file —
- *  KHÔNG đổi hành vi, mọi comment bản vá tại chỗ vẫn là nguồn sự thật. */
+/** Dựng hàm `attach` cho một buổi capture: mở 1 stream Soniox (cặp key single-use truyền vào) + PCM
+ *  worklet, nối align buffer, đăng ký runtime vào pipeline NGAY khi mở được (BUG #3) và cắm các handler
+ *  canonical/en/partial/degraded/fatal. `getKeys` xin cặp key MỚI cho mỗi lượt reconnect. Tách khỏi
+ *  `start-capture.ts` chỉ để giữ mốc 200 dòng/file. */
 export function createStreamAttacher(
   deps: StartLiveCaptureDeps,
   pipeline: LivePipeline,
   mode: "online" | "direct",
   t0Local: number,
-): (label: StreamLabel, fixedRole: Speaker | null, mediaStream: MediaStream) => Promise<StreamRuntime> {
+  getKeys: () => Promise<PairKeys>,
+): (label: StreamLabel, fixedRole: Speaker | null, mediaStream: MediaStream, keys: PairKeys) => Promise<StreamRuntime> {
   const { clientUttIdToLocalIdRef, tempIdCounterRef, banner } = deps;
   const findRuntime = (label: StreamLabel) => pipeline.streams.current.find((r) => r.label === label);
 
@@ -67,8 +70,17 @@ export function createStreamAttacher(
     pipeline.ingestQueue?.enqueue(payload);
   };
 
-  const attach = async (label: StreamLabel, fixedRole: Speaker | null, mediaStream: MediaStream): Promise<StreamRuntime> => {
+  const attach = async (
+    label: StreamLabel,
+    fixedRole: Speaker | null,
+    mediaStream: MediaStream,
+    keys: PairKeys,
+  ): Promise<StreamRuntime> => {
     const directSpeakerMap = new Map<string, Speaker>();
+    // Khai TRƯỚC controller: lỗi server có thể đến ~230 ms sau connect (E1), lúc `runtime` chưa được đăng ký
+    // vào pipeline — handler degraded/fatal dùng closure này chứ KHÔNG tra `findRuntime` (tra sẽ trượt ⇒ bỏ
+    // qua ⇒ stream chết câm).
+    let pcmCapture: PcmWorkletCapture | null = null;
     const controller = new SonioxStreamController({
       mode,
       label,
@@ -110,34 +122,39 @@ export function createStreamAttacher(
             partial: true,
           });
         },
-        // C1 fix: rớt Soniox WS ngoài ý muốn -> banner degraded + tự thử reconnect() với
-        // backoff giới hạn (KHÔNG áp dụng cho đóng chủ động — controller tự lọc qua
-        // stopped/stale-connection guard trong use-soniox.ts, xem handleDisconnected()).
+        // C1 fix: rớt Soniox WS ngoài ý muốn (hoặc lỗi server thử lại được, vd 401) -> banner degraded +
+        // tự reconnect với cặp key MỚI mỗi lượt, backoff giới hạn (KHÔNG áp dụng cho đóng chủ động —
+        // controller tự lọc qua stopped/stale-connection guard trong use-soniox.ts).
         onDegraded: () => {
           banner.showDegraded();
-          const runtime = findRuntime(label);
-          if (!runtime) return;
           void reconnectWithBackoff({
-            getApiKey: () => pipeline.tempKeyClient?.currentLease?.key ?? null,
-            reconnect: (apiKey) => runtime.controller.reconnect(apiKey),
-            onGiveUp: () => {
-              runtime.pcmCapture.stop();
-              useSessionStore
-                .getState()
-                .showToast(`Mất kết nối thu âm (${label}) — đã dừng, transcript trước đó vẫn giữ nguyên`);
+            getKeys,
+            reconnect: (newKeys) => controller.reconnect(newKeys),
+            onGiveUp: (err) => {
+              pcmCapture?.stop();
+              console.error("[soniox] reconnect bỏ cuộc", { label, code: (err as { code?: string } | null)?.code });
+              useSessionStore.getState().showToast(giveUpToastMessage(label, err));
             },
           });
         },
         // Banner restored đã tự bắn TRONG SonioxStreamController.reconnect() khi thành công.
         onRestored: () => banner.showRestored(),
-        onError: () => useSessionStore.getState().showToast("Lỗi kết nối thu âm — đang thử lại"),
+        // Lỗi KHÔNG thử lại được (hết duration/thiếu quyền/hết hạn mức/cấu hình): dừng thu âm luồng này
+        // + báo theo loại. Controller đã tự đóng cả cặp và chỉ gọi 1 lần.
+        onFatal: (kind) => {
+          pcmCapture?.stop();
+          banner.showDegraded();
+          const message = fatalToastMessage(kind);
+          if (message) useSessionStore.getState().showToast(message);
+        },
+        onError: (err) => {
+          console.warn("[soniox] stream error", { label, name: err.name, status: (err as { statusCode?: number }).statusCode });
+        },
       },
     });
 
-    const lease = pipeline.tempKeyClient?.currentLease;
-    if (!lease) throw new Error("Không lấy được Soniox key");
-    await controller.open(lease.key);
-    const pcmCapture = new PcmWorkletCapture({ onChunk: (chunk) => controller.feed(chunk, Date.now()) });
+    await controller.open(keys);
+    pcmCapture = new PcmWorkletCapture({ onChunk: (chunk) => controller.feed(chunk, Date.now()) });
     await pcmCapture.start(mediaStream);
 
     const runtime: StreamRuntime = {

@@ -8,7 +8,7 @@ import {
   resyncAfterReconnect,
   type StreamRuntime,
 } from "@/hooks/use-live-session";
-import { clockOffsetStorageKey } from "@/hooks/use-session";
+import { ApiError, clockOffsetStorageKey } from "@/hooks/use-session";
 import { IngestQueue, type IngestUtterancePayload } from "@/lib/transcript/ingest-queue";
 
 beforeEach(() => {
@@ -139,39 +139,68 @@ test("test_seq_gap_detected_triggers_backfill_with_correct_after_seq", async () 
   expect(applyBackfillRow).toHaveBeenCalledTimes(2);
 });
 
-// ===== C1 fix: reconnectWithBackoff — retry giới hạn, KHÔNG loop vô hạn =====
+// ===== C1 fix: reconnectWithBackoff — retry giới hạn, KHÔNG loop vô hạn; key single-use ⇒ cặp MỚI mỗi lượt =====
+
+const pairKeys = (n: number) => ({ canonical: `c-${n}`, en: `e-${n}` });
 
 test("test_reconnect_with_backoff_succeeds_on_first_attempt_without_giving_up", async () => {
   // Arrange
+  const getKeys = vi.fn().mockResolvedValue(pairKeys(1));
   const reconnect = vi.fn().mockResolvedValue(undefined);
   const onGiveUp = vi.fn();
 
   // Act
-  await reconnectWithBackoff({ getApiKey: () => "key-1", reconnect, onGiveUp });
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp });
 
   // Assert
   expect(reconnect).toHaveBeenCalledTimes(1);
-  expect(reconnect).toHaveBeenCalledWith("key-1");
+  expect(reconnect).toHaveBeenCalledWith(pairKeys(1));
   expect(onGiveUp).not.toHaveBeenCalled();
+});
+
+test("test_reconnect_with_backoff_fetches_new_keys_on_every_attempt", async () => {
+  // Arrange — key single-use: dùng lại key cũ ⇒ 401 sau connect, nên mỗi lượt phải xin cặp MỚI
+  const getKeys = vi
+    .fn()
+    .mockResolvedValueOnce(pairKeys(1))
+    .mockResolvedValueOnce(pairKeys(2))
+    .mockResolvedValueOnce(pairKeys(3));
+  const reconnect = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("401 after connect"))
+    .mockRejectedValueOnce(new Error("401 after connect"))
+    .mockResolvedValueOnce(undefined);
+  const delayFn = vi.fn().mockResolvedValue(undefined);
+
+  // Act
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp: vi.fn() }, { maxAttempts: 3, delayFn });
+
+  // Assert — mỗi lượt một cặp khác nhau, theo đúng thứ tự
+  expect(getKeys).toHaveBeenCalledTimes(3);
+  expect(reconnect.mock.calls.map((c) => c[0])).toEqual([pairKeys(1), pairKeys(2), pairKeys(3)]);
 });
 
 test("test_reconnect_with_backoff_gives_up_after_max_attempts_without_infinite_loop", async () => {
   // Arrange — luôn thất bại -> phải dừng sau đúng maxAttempts, KHÔNG loop vô hạn
-  const reconnect = vi.fn().mockRejectedValue(new Error("still down"));
+  const lastError = new Error("still down");
+  const getKeys = vi.fn().mockResolvedValue(pairKeys(1));
+  const reconnect = vi.fn().mockRejectedValue(lastError);
   const onGiveUp = vi.fn();
   const delayFn = vi.fn().mockResolvedValue(undefined);
 
   // Act
-  await reconnectWithBackoff({ getApiKey: () => "key", reconnect, onGiveUp }, { maxAttempts: 3, delayFn });
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp }, { maxAttempts: 3, delayFn });
 
-  // Assert — đúng 3 lần thử, give up đúng 1 lần, backoff giữa các lần (không delay sau lần cuối)
+  // Assert — đúng 3 lần thử, give up đúng 1 lần kèm lỗi cuối, backoff giữa các lần (không delay sau lần cuối)
   expect(reconnect).toHaveBeenCalledTimes(3);
   expect(onGiveUp).toHaveBeenCalledTimes(1);
+  expect(onGiveUp).toHaveBeenCalledWith(lastError);
   expect(delayFn).toHaveBeenCalledTimes(2);
 });
 
 test("test_reconnect_with_backoff_stops_retrying_once_a_later_attempt_succeeds", async () => {
   // Arrange — thất bại 2 lần rồi thành công lần 3
+  const getKeys = vi.fn().mockResolvedValue(pairKeys(1));
   const reconnect = vi
     .fn()
     .mockRejectedValueOnce(new Error("down"))
@@ -181,26 +210,72 @@ test("test_reconnect_with_backoff_stops_retrying_once_a_later_attempt_succeeds",
   const delayFn = vi.fn().mockResolvedValue(undefined);
 
   // Act
-  await reconnectWithBackoff({ getApiKey: () => "key", reconnect, onGiveUp }, { maxAttempts: 5, delayFn });
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp }, { maxAttempts: 5, delayFn });
 
   // Assert — dừng NGAY khi thành công, không chạy hết maxAttempts
   expect(reconnect).toHaveBeenCalledTimes(3);
   expect(onGiveUp).not.toHaveBeenCalled();
 });
 
-test("test_reconnect_with_backoff_skips_reconnect_call_when_api_key_unavailable", async () => {
-  // Arrange — chưa có lease (vd TempKeyClient chưa fetchInitial xong) -> không gọi reconnect(),
-  // nhưng vẫn tính vào vòng retry (không loop vô hạn chờ key).
+test("test_reconnect_with_backoff_when_get_keys_fails_retries_then_gives_up_without_calling_reconnect", async () => {
+  // Arrange — xin key hỏng (mạng): không có key thì không gọi reconnect(), nhưng vẫn tính vào vòng
+  // retry (không loop vô hạn chờ key).
+  const keyError = new Error("network down");
+  const getKeys = vi.fn().mockRejectedValue(keyError);
   const reconnect = vi.fn();
   const onGiveUp = vi.fn();
   const delayFn = vi.fn().mockResolvedValue(undefined);
 
   // Act
-  await reconnectWithBackoff({ getApiKey: () => null, reconnect, onGiveUp }, { maxAttempts: 2, delayFn });
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp }, { maxAttempts: 2, delayFn });
 
   // Assert
+  expect(getKeys).toHaveBeenCalledTimes(2);
   expect(reconnect).not.toHaveBeenCalled();
   expect(onGiveUp).toHaveBeenCalledTimes(1);
+  expect(onGiveUp).toHaveBeenCalledWith(keyError);
+});
+
+test.each([
+  "cap_reached",
+  "invalid_session_status",
+  "not_found",
+  "email_not_confirmed",
+  "rate_limit_exceeded",
+])("test_reconnect_with_backoff_when_route_returns_%s_gives_up_without_retry", async (code) => {
+  // Arrange — lỗi route mà xin key mới cũng vô ích (buổi đã hết/không hợp lệ, user vượt hạn)
+  const routeError = new ApiError(code);
+  const getKeys = vi.fn().mockRejectedValue(routeError);
+  const reconnect = vi.fn();
+  const onGiveUp = vi.fn();
+  const delayFn = vi.fn().mockResolvedValue(undefined);
+
+  // Act
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp }, { maxAttempts: 3, delayFn });
+
+  // Assert — bỏ cuộc NGAY lượt đầu: không backoff, không reconnect, không xin key lần 2
+  expect(getKeys).toHaveBeenCalledTimes(1);
+  expect(delayFn).not.toHaveBeenCalled();
+  expect(reconnect).not.toHaveBeenCalled();
+  expect(onGiveUp).toHaveBeenCalledWith(routeError);
+});
+
+test("test_reconnect_with_backoff_when_route_returns_rate_limit_unavailable_retries_then_gives_up_with_last_error", async () => {
+  // Arrange — route fail-closed (503) khi rate-limit không kiểm được: lỗi thoáng qua ⇒ vẫn backoff
+  const routeError = new ApiError("rate_limit_unavailable");
+  const getKeys = vi.fn().mockRejectedValue(routeError);
+  const reconnect = vi.fn();
+  const onGiveUp = vi.fn();
+  const delayFn = vi.fn().mockResolvedValue(undefined);
+
+  // Act
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp }, { maxAttempts: 3, delayFn });
+
+  // Assert — đủ 3 lượt (1s/2s backoff), rồi bỏ cuộc đúng 1 lần kèm ApiError để caller báo thông điệp rõ
+  expect(getKeys).toHaveBeenCalledTimes(3);
+  expect(delayFn).toHaveBeenCalledTimes(2);
+  expect(onGiveUp).toHaveBeenCalledTimes(1);
+  expect(onGiveUp).toHaveBeenCalledWith(routeError);
 });
 
 // ===== M2 fix: closeAllStreamsOnce — idempotent, tránh double-close khi unmount ngay sau endInterview() =====

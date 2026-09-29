@@ -8,16 +8,14 @@ import { useSessionStore } from "@/stores/session-store";
  * Có check `pipeline.disposed` TRƯỚC cặp attach và SAU cặp attach, nhưng KHÔNG có ở KHE
  * GIỮA hai lần.
  *
- * ⚠️ ĐÍNH CHÍNH mô tả nợ trong `docs/security-notes.md` §7 (bản trước ghi "vẫn mở thêm 2
- * WebSocket -> đốt quota 10 concurrent"): SAI. `disposeLivePipeline` set
- * `pipeline.tempKeyClient = null`, mà `attach` đọc lease từ `pipeline.tempKeyClient
- * ?.currentLease` NGAY TRƯỚC `controller.open()` (constructor chỉ dựng wrapper, chưa mở
- * socket) -> attach thứ hai NÉM trước khi mở được kết nối nào. KHÔNG có rò WebSocket.
+ * Cơ chế chặn HIỆN TẠI (sau khi bỏ lease key dùng chung trong pipeline): cặp key được xin TRƯỚC rồi truyền vào
+ * `attach`, nên `attach` KHÔNG còn tự ném khi pipeline đã dispose — chốt `pipeline.disposed` ở KHE GIỮA
+ * hai lần attach (`start-capture.ts`) là thứ DUY NHẤT ngăn mở kết nối thứ hai (đốt quota 10 concurrent
+ * của org) cho một pipeline đã chết.
  *
- * Tác hại THẬT của khe hở: exception đó rơi vào catch của mount effect -> bắn TOAST LỖI GIẢ
- * "Không bật được micro/chia sẻ âm thanh — thử lại" trong khi user chỉ đơn giản rời màn live.
- * Toast hiện trên màn KẾ TIẾP, khiến người dùng tưởng thu âm hỏng. Test khoá đúng vế này,
- * kèm bất biến "không mở thêm kết nối" để đề phòng ai đó đổi thứ tự lấy lease trong `attach`.
+ * Tác hại nếu thiếu chốt đó: `attach("tab")` mở thêm 2 WebSocket cho pipeline mồ côi. (Trước đây chốt phụ
+ * là lease null làm `attach` ném ⇒ toast lỗi GIẢ "Không bật được micro..."; nay cơ chế đó không còn.)
+ * Test khoá cả hai vế: không toast lỗi khi user chỉ rời màn live, và không mở thêm kết nối.
  */
 
 const hoisted = vi.hoisted(() => {
@@ -47,7 +45,6 @@ vi.mock("@/hooks/use-soniox", () => ({
     }
     async stop() {}
     async reconnect() {}
-    async renew() {}
     feed() {}
     getEpochConnMs() {
       return 0;
@@ -81,18 +78,10 @@ vi.mock("@/lib/audio/silence-detector", () => ({
   createAnalyserRmsReader: () => () => 0,
 }));
 
-vi.mock("@/lib/soniox/temp-key-client", () => ({
-  TempKeyClient: class {
-    currentLease = { key: "k-test", expiresAt: Date.now() + 60_000 };
-    async fetchInitial() {
-      return this.currentLease;
-    }
-    async renew() {
-      return this.currentLease;
-    }
-    scheduleRenewal() {}
-    dispose() {}
-  },
+vi.mock("@/hooks/live-session/live-session-api-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/live-session/live-session-api-client")>()),
+  // Key single-use xin SAU capture — test không đụng mạng thật.
+  fetchSonioxPairKeys: async () => ({ canonical: "k-canonical", en: "k-en" }),
 }));
 
 vi.mock("@/lib/realtime/subscribe-client", () => ({
