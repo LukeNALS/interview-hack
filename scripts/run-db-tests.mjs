@@ -24,6 +24,7 @@ const DB_TEST_FILES = [
   "tests/integration/profile-privileges.test.ts",
   "tests/integration/session-rpc-lifecycle.test.ts",
   "tests/integration/session-lockdown.test.ts",
+  "tests/integration/realtime-private-channel.test.ts",
 ];
 
 function fail(message) {
