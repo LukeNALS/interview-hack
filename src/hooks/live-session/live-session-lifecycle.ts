@@ -41,6 +41,8 @@ export interface ReconnectWithBackoffOptions {
   /** Backoff trước lần thử thứ N (1-indexed). Default exponential 1s/2s/4s. */
   backoffMs?: (attempt: number) => number;
   delayFn?: (ms: number) => Promise<void>;
+  /** Chờ trước lượt ĐẦU (mặc định 0) — dùng khi lần degrade trước đó là thất bại nhanh (reconnect-streak-guard). */
+  initialDelayMs?: number;
 }
 
 /** C1 fix: xin cặp key mới rồi gọi `controller.reconnect()` với retry backoff giới hạn — thành công thì
@@ -54,7 +56,9 @@ export async function reconnectWithBackoff(
     maxAttempts = 3,
     backoffMs = (attempt) => 1000 * 2 ** (attempt - 1),
     delayFn = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    initialDelayMs = 0,
   } = opts;
+  if (initialDelayMs > 0) await delayFn(initialDelayMs);
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (deps.shouldContinue && !deps.shouldContinue()) return;

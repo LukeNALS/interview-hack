@@ -11,7 +11,10 @@
  * - `session_expired`: 403 do `max_session_duration` hết (cap phiên) — E4, server cắt cứng.
  * - `forbidden`: 403 KHÁC (thiếu quyền). Không có `raw` ⇒ vẫn `forbidden`: mặc định an toàn là hiện
  *   lỗi cho user chứ không nuốt như hết cap.
- * - `quota`: 402/429. `fatal`: 400 (lỗi cấu hình phía ta).
+ * - `quota`: 402 (hết số dư / budget tháng của org hoặc project — Soniox docs: `organization_balance_exhausted`,
+ *   `*_monthly_budget_exhausted`; thử lại vô ích). `fatal`: 400 (lỗi cấu hình phía ta).
+ * - 429 = `limit_exceeded` (requests/phút hoặc concurrency của org/project — Soniox docs): thử lại được sau một
+ *   lúc ⇒ `retry`. Vòng lặp được chặn bởi `reconnect-streak-guard` (thất bại nhanh liên tiếp ⇒ bỏ cuộc).
  */
 export type SonioxErrorKind = "retry" | "session_expired" | "forbidden" | "quota" | "fatal";
 export type FatalKind = Exclude<SonioxErrorKind, "retry">;
@@ -26,8 +29,9 @@ export function classifySonioxRealtimeError(err: unknown): SonioxErrorKind {
     case 403:
       return raw?.error_type === SESSION_EXPIRED_ERROR_TYPE ? "session_expired" : "forbidden";
     case 402:
-    case 429:
       return "quota";
+    case 429:
+      return "retry";
     case 400:
       return "fatal";
     default:

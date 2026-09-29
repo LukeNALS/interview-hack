@@ -9,6 +9,7 @@ import type { Speaker } from "@/types/events";
 import { closeAllStreamsOnce, type LivePipeline, type StreamRuntime } from "../live-pipeline";
 import { SonioxStreamController, type CanonicalSegment, type EnSegment } from "../use-soniox";
 import { reconnectWithBackoff } from "./live-session-lifecycle";
+import { createReconnectStreakGuard, ReconnectStreakExceededError } from "./reconnect-streak-guard";
 import { fatalToastMessage, giveUpToastMessage } from "./soniox-error-messages";
 import { resolveDirectSpeaker, upsertUtterance } from "./utterance-mapping";
 import type { StartLiveCaptureDeps } from "./start-capture";
@@ -81,6 +82,14 @@ export function createStreamAttacher(
     // vào pipeline — handler degraded/fatal dùng closure này chứ KHÔNG tra `findRuntime` (tra sẽ trượt ⇒ bỏ
     // qua ⇒ stream chết câm).
     let pcmCapture: PcmWorkletCapture | null = null;
+    // Chặn vòng degrade→reconnect vô hạn khi connection mở được rồi lại rớt/bị từ chối ngay (xem file guard).
+    const streak = createReconnectStreakGuard();
+    const giveUp = (err: unknown) => {
+      pcmCapture?.stop();
+      console.error("[soniox] reconnect bỏ cuộc", { label, code: (err as { code?: string } | null)?.code });
+      const message = giveUpToastMessage(label, err);
+      if (message) useSessionStore.getState().showToast(message);
+    };
     const controller = new SonioxStreamController({
       mode,
       label,
@@ -130,20 +139,23 @@ export function createStreamAttacher(
           // không banner, không mint key cho pipeline chết.
           if (pipeline.disposed) return;
           banner.showDegraded();
-          void reconnectWithBackoff({
-            getKeys,
-            reconnect: (newKeys) => controller.reconnect(newKeys),
-            shouldContinue: () => !pipeline.disposed && !controller.isStopped,
-            onGiveUp: (err) => {
-              pcmCapture?.stop();
-              console.error("[soniox] reconnect bỏ cuộc", { label, code: (err as { code?: string } | null)?.code });
-              const message = giveUpToastMessage(label, err);
-              if (message) useSessionStore.getState().showToast(message);
+          const decision = streak.onDegraded();
+          if (decision.action === "give_up") return giveUp(new ReconnectStreakExceededError());
+          void reconnectWithBackoff(
+            {
+              getKeys,
+              reconnect: (newKeys) => controller.reconnect(newKeys),
+              shouldContinue: () => !pipeline.disposed && !controller.isStopped,
+              onGiveUp: giveUp,
             },
-          });
+            { initialDelayMs: decision.waitMs },
+          );
         },
         // Banner restored đã tự bắn TRONG SonioxStreamController.reconnect() khi thành công.
-        onRestored: () => banner.showRestored(),
+        onRestored: () => {
+          streak.markConnected();
+          banner.showRestored();
+        },
         // Lỗi KHÔNG thử lại được (hết duration/thiếu quyền/hết hạn mức/cấu hình): dừng thu âm luồng này
         // + báo theo loại. Controller đã tự đóng cả cặp và chỉ gọi 1 lần.
         onFatal: (kind) => {

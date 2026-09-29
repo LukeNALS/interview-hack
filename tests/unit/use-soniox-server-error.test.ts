@@ -170,17 +170,32 @@ describe("SonioxStreamController — lỗi server sau connect, KHÔNG thử lạ
     expect(onDegraded).not.toHaveBeenCalled();
   });
 
-  test("test_soniox_stream_controller_quota_error_reports_fatal_quota", async () => {
+  test("test_soniox_stream_controller_payment_required_error_reports_fatal_quota", async () => {
     // Arrange
     const onFatal = vi.fn();
     const { controller, instances } = makeController({ onFatal });
     await openImmediately(controller, pairKeys("k1"), instances);
 
-    // Act
-    instances[1].handlers["error"]?.(serverError(429));
+    // Act — 402: hết số dư / budget tháng
+    instances[1].handlers["error"]?.(serverError(402));
 
     // Assert
     expect(onFatal).toHaveBeenCalledWith("quota", expect.anything());
+  });
+
+  test("test_soniox_stream_controller_limit_exceeded_429_degrades_for_retry_instead_of_fatal", async () => {
+    // Arrange
+    const onFatal = vi.fn();
+    const onDegraded = vi.fn();
+    const { controller, instances } = makeController({ onFatal, onDegraded });
+    await openImmediately(controller, pairKeys("k1"), instances);
+
+    // Act — 429 limit_exceeded (RPM/concurrency)
+    instances[0].handlers["error"]?.(serverError(429, "limit_exceeded"));
+
+    // Assert — thử lại được, không dừng luồng
+    expect(onDegraded).toHaveBeenCalledTimes(1);
+    expect(onFatal).not.toHaveBeenCalled();
   });
 
   test("test_soniox_stream_controller_feed_after_fatal_buffers_without_touching_dead_connections", async () => {

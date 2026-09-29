@@ -50,8 +50,19 @@ describe("classifySonioxRealtimeError", () => {
     expect(classifySonioxRealtimeError(err)).toBe("forbidden");
   });
 
-  test.each([402, 429])("test_classify_soniox_error_%i_quota_is_fatal_quota", (status) => {
-    expect(classifySonioxRealtimeError(sdkError(status))).toBe("quota");
+  test("test_classify_soniox_error_402_payment_required_is_fatal_quota", () => {
+    // Arrange — 402: hết số dư hoặc budget tháng (org/project) — thử lại vô ích
+    const err = sdkError(402, { error_code: 402, error_type: "organization_monthly_budget_exhausted" });
+    // Act + Assert
+    expect(classifySonioxRealtimeError(err)).toBe("quota");
+  });
+
+  test("test_classify_soniox_error_429_limit_exceeded_is_retry_not_fatal", () => {
+    // Arrange — 429 `limit_exceeded` (requests/phút hoặc concurrency org/project — Soniox docs): thử lại được sau một
+    // lúc. Vòng lặp được chặn bởi reconnect-streak-guard, không phải bởi việc coi 429 là fatal.
+    const err = sdkError(429, { error_code: 429, error_type: "limit_exceeded" });
+    // Act + Assert
+    expect(classifySonioxRealtimeError(err)).toBe("retry");
   });
 
   test.each([408, 500, 503, 502, 504])("test_classify_soniox_error_%i_server_side_is_retry", (status) => {

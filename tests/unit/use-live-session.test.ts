@@ -278,6 +278,39 @@ test("test_reconnect_with_backoff_when_route_returns_rate_limit_unavailable_retr
   expect(onGiveUp).toHaveBeenCalledWith(routeError);
 });
 
+test("test_reconnect_with_backoff_waits_initial_delay_before_first_attempt", async () => {
+  // Arrange — lần degrade trước là thất bại nhanh: phải chờ trước lượt đầu (không thử lại dồn dập)
+  const order: string[] = [];
+  const getKeys = vi.fn(async () => {
+    order.push("getKeys");
+    return pairKeys(1);
+  });
+  const reconnect = vi.fn().mockResolvedValue(undefined);
+  const delayFn = vi.fn(async (ms: number) => {
+    order.push(`delay:${ms}`);
+  });
+
+  // Act
+  await reconnectWithBackoff({ getKeys, reconnect, onGiveUp: vi.fn() }, { delayFn, initialDelayMs: 2000 });
+
+  // Assert — chờ TRƯỚC khi xin key
+  expect(order).toEqual(["delay:2000", "getKeys"]);
+});
+
+test("test_reconnect_with_backoff_without_initial_delay_does_not_wait_before_first_attempt", async () => {
+  // Arrange
+  const delayFn = vi.fn().mockResolvedValue(undefined);
+
+  // Act
+  await reconnectWithBackoff(
+    { getKeys: async () => pairKeys(1), reconnect: vi.fn().mockResolvedValue(undefined), onGiveUp: vi.fn() },
+    { delayFn },
+  );
+
+  // Assert
+  expect(delayFn).not.toHaveBeenCalled();
+});
+
 test("test_reconnect_with_backoff_when_should_continue_is_false_stops_without_minting_keys_or_giving_up", async () => {
   // Arrange — controller đã stop/fatal hoặc pipeline đã dispose trước khi lượt thử bắt đầu
   const getKeys = vi.fn().mockResolvedValue(pairKeys(1));

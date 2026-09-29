@@ -73,6 +73,8 @@ vi.mock("@/hooks/use-soniox", () => ({
     }
     async reconnect(keys: { canonical: string; en: string }) {
       hoisted.reconnected.push(keys);
+      // Controller thật gọi onRestored khi reconnect thành công — bộ chặn vòng lặp dựa vào mốc này.
+      (this.handlers.onRestored as (() => void) | undefined)?.();
     }
     isStopped = false;
     async stop() {
@@ -424,5 +426,105 @@ test("test_live_session_reconnect_stops_silently_when_controller_already_stopped
   expect(hoisted.keyCalls).toBe(1);
   expect(hoisted.reconnected).toEqual([]);
   expect(useSessionStore.getState().toast).toBe("");
+  view.unmount();
+});
+
+test("test_live_session_repeated_quick_degrades_give_up_after_streak_limit_without_minting_more_keys", async () => {
+  // Arrange — connection mở được rồi lại rớt/bị từ chối NGAY sau mỗi lần nối (vd 401/429 ~230 ms sau connect):
+  // mỗi vòng reconnectWithBackoff có bộ đếm 3 lượt mới nên chỉ guard thất bại-nhanh mới chặn được vòng lặp
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+  await flushAsync();
+  expect(hoisted.keyCalls).toBe(1);
+  const pcmStopsBefore = hoisted.pcmStops;
+
+  // Act + Assert — lần 1: reconnect ngay (chờ 0 s)
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  expect(hoisted.reconnected).toHaveLength(1);
+
+  // lần 2: chờ 1 s trước lượt đầu
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  expect(hoisted.reconnected).toHaveLength(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(hoisted.reconnected).toHaveLength(2);
+
+  // lần 3: chờ 2 s
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1999);
+  });
+  expect(hoisted.reconnected).toHaveLength(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(hoisted.reconnected).toHaveLength(3);
+
+  // lần 4: bỏ cuộc — không mint thêm key, dừng thu âm luồng đó, toast nói rõ
+  const keyCallsBeforeGiveUp = hoisted.keyCalls;
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  // Đọc toast TRƯỚC khi tua timer: toast tự tắt sau 2,4 s (session-store)
+  expect(useSessionStore.getState().toast).toContain("liên tục bị ngắt hoặc từ chối");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(hoisted.keyCalls).toBe(keyCallsBeforeGiveUp);
+  expect(hoisted.reconnected).toHaveLength(3);
+  expect(hoisted.pcmStops).toBe(pcmStopsBefore + 1);
+  view.unmount();
+});
+
+test("test_live_session_connection_stable_for_window_resets_quick_degrade_streak", async () => {
+  // Arrange — 1 lần thất bại nhanh, rồi kết nối sống ổn định > 10 s
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+  await flushAsync();
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  expect(hoisted.reconnected).toHaveLength(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+
+  // Act — mạng chập chờn bình thường: rớt sau khi đã ổn định
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+
+  // Assert — reset: reconnect NGAY (không chờ 1 s như thất bại nhanh thứ 2)
+  expect(hoisted.reconnected).toHaveLength(2);
+  view.unmount();
+});
+
+test("test_live_session_degrade_right_after_restore_counts_as_quick_even_after_a_long_stable_run", async () => {
+  // Arrange — stream chạy ổn định rất lâu, rớt 1 lần (reconnect ngay), rồi nối xong lại bị từ chối NGAY
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+  await flushAsync();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  expect(hoisted.reconnected).toHaveLength(1);
+
+  // Act — lỗi đến ngay sau lần restore
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+
+  // Assert — đo "sống được bao lâu" từ lúc RESTORE (không phải từ lần mở đầu cách đó 60 s): thất bại nhanh thứ 2
+  // nên phải chờ 1 s trước lượt đầu
+  expect(hoisted.reconnected).toHaveLength(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(hoisted.reconnected).toHaveLength(2);
   view.unmount();
 });
