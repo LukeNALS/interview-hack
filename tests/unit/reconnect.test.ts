@@ -2,16 +2,16 @@ import { describe, expect, test } from "vitest";
 import { ReconnectBuffer, epochConnForReplay } from "@/lib/soniox/reconnect";
 
 describe("ReconnectBuffer — RAM-only, capped at 2 minutes", () => {
-  test("test_reconnect_buffer_push_and_drain_returns_chunks_in_capture_order", () => {
+  test("test_reconnect_buffer_push_and_chunks_since_returns_chunks_in_capture_order_without_clearing", () => {
     // Arrange
     const buffer = new ReconnectBuffer();
     // Act
     buffer.push(new Uint8Array([1]), 1000);
     buffer.push(new Uint8Array([2]), 1100);
-    const drained = buffer.drain();
+    const all = buffer.chunksSince(0);
     // Assert
-    expect(drained.map((c) => c.captureTs)).toEqual([1000, 1100]);
-    expect(buffer.isEmpty).toBe(true); // drain() clears the buffer
+    expect(all.map((c) => c.captureTs)).toEqual([1000, 1100]);
+    expect(buffer.isEmpty).toBe(false); // buffer luôn ghi: đọc không xoá, reconnect lần sau vẫn dùng được
   });
 
   test("test_reconnect_buffer_evicts_chunks_older_than_max_duration", () => {

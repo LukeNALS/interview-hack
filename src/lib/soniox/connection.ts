@@ -137,6 +137,23 @@ export class SonioxConnection {
     await this.session?.finish();
   }
 
+  /**
+   * Kết thúc êm khi dừng buổi: `finish()` (chờ `finished`, trong lúc đó token/endpoint cuối vẫn về handler) rồi `close()`.
+   * KHÔNG bao giờ ném và KHÔNG bao giờ treo: session đã chết thì `finish()` ném `StateError` (nuốt), mạng treo thì hết
+   * `timeoutMs` là đóng. SDK không có timeout riêng cho `finish()`.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    if (this.session) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      });
+      await Promise.race([this.finish().catch(() => {}), timeout]);
+      clearTimeout(timer);
+    }
+    this.close();
+  }
+
   /** Closes immediately without waiting — used to drop the OLD connection ~1s after a
    *  reconnect swap (overlap window per §Architecture). */
   close(): void {

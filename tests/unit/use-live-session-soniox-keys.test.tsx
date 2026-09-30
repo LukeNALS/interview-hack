@@ -45,6 +45,7 @@ const hoisted = vi.hoisted(() => {
     pcmCalls: [] as string[],
     pcmStartError: null as Error | null,
     controllerStops: 0,
+    controllerStopOpts: [] as Array<{ flushPending?: boolean } | undefined>,
     tracksStarted: 0,
     tracksStopped: 0,
   };
@@ -77,9 +78,10 @@ vi.mock("@/hooks/use-soniox", () => ({
       (this.handlers.onRestored as (() => void) | undefined)?.();
     }
     isStopped = false;
-    async stop() {
+    async stop(opts?: { flushPending?: boolean }) {
       this.isStopped = true;
       hoisted.controllerStops += 1;
+      hoisted.controllerStopOpts.push(opts);
     }
     feed() {}
     getEpochConnMs() {
@@ -196,6 +198,7 @@ beforeEach(() => {
   hoisted.pcmCalls = [];
   hoisted.pcmStartError = null;
   hoisted.controllerStops = 0;
+  hoisted.controllerStopOpts = [];
   hoisted.tracksStarted = 0;
   hoisted.tracksStopped = 0;
   useSessionStore.getState().patch({ toast: "" });
@@ -484,6 +487,8 @@ test("test_live_session_repeated_quick_degrades_give_up_after_streak_limit_witho
   expect(hoisted.pcmStops).toBe(pcmStopsBefore + 1);
   expect(hoisted.controllerStops).toBe(controllerStopsBefore + 1);
   expect(hoisted.controllers[0].isStopped).toBe(true);
+  // bỏ cuộc phải chốt nốt phần final đang tích luỹ của pair hiện tại (đỡ mất câu đang nói dở)
+  expect(hoisted.controllerStopOpts.at(-1)).toEqual({ flushPending: true });
   view.unmount();
 });
 

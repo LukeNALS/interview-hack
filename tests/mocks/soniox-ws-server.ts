@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { acceptUpgrade, OPCODE, readFrames, sendClose, sendJson } from "./ws-protocol";
-import { FIXTURE_TURNS, finalTokens, partialTokens } from "./soniox-fixtures";
+import { DEFAULT_TIMING, FIXTURE_TURNS, REALTIME_TIMING, finalTokens, partialTokens, type TokenTiming } from "./soniox-fixtures";
 
 /**
  * Mock Soniox realtime WS. App trỏ vào đây qua `NEXT_PUBLIC_SONIOX_WS_URL` (P07),
@@ -26,8 +26,16 @@ const PORT = Number(process.argv[process.argv.indexOf("--port") + 1] ?? 55391);
 /** Mốc phát: lượt i final tại T0 + (i+1)*TURN_INTERVAL_MS; partial trước đó nửa nhịp. */
 const TURN_INTERVAL_MS = 500;
 const FIRST_TURN_DELAY_MS = 400;
-/** Kịch bản `drop`: cắt socket sau khi phát xong ngần này lượt. */
+/** Kịch bản `drop`/`drop-mid`: cắt socket sau khi phát xong ngần này lượt. */
 const DROP_AFTER_TURNS = 3;
+/**
+ * `drop-mid`, connection nối lại: app replay audio từ (mốc câu cuối đã emit − 300 ms) nhưng bắt đầu ở ranh giới chunk 100 ms nên mốc 0
+ * của connection mới nằm trong [mốc − 300, mốc − 200]. Mock chọn mốc token của lượt bị cắt ở ~340 ms (giữa khoảng đó, mọi sai số
+ * lượng tử hoá đều cho kết quả như nhau) và đuôi lượt trước ở 120–250 ms (luôn kết thúc trước mốc đã emit, giữ dung sai của cổng).
+ */
+const REPLAY_INTERRUPTED_TURN_START_MS = 340;
+const REPLAY_TAIL_START_MS = 120;
+const REPLAY_TAIL_END_MS = 250;
 
 interface ParsedKey {
   scenario: string;
@@ -59,12 +67,41 @@ interface ConnState {
   closed: boolean;
 }
 
+/** `drop-mid`, connection nối lại: phiên âm lại ~300 ms cuối của lượt trước (đã emit — app phải bỏ) kèm bản dịch và `<end>`. */
+function scheduleReplayedTail(state: ConnState): void {
+  const tail = FIXTURE_TURNS[DROP_AFTER_TURNS - 1];
+  const speaker = tail.lang === "ja" ? "1" : "2";
+  state.timers.push(
+    setTimeout(() => {
+      if (state.closed) return;
+      const translated = state.channel === "canonical" ? tail.counterpart : tail.en;
+      sendJson(state.socket, {
+        tokens: [
+          { text: tail.orig.slice(-4), confidence: 0.9, is_final: true, language: tail.lang, speaker, start_ms: REPLAY_TAIL_START_MS, end_ms: REPLAY_TAIL_END_MS, translation_status: "original" },
+          { text: translated.slice(-6), confidence: 0.9, is_final: true, language: tail.lang, speaker, translation_status: "translation" },
+          { text: "<end>", confidence: 1, is_final: true },
+        ],
+        final_audio_proc_ms: 0,
+        total_audio_proc_ms: 0,
+      });
+    }, 150),
+  );
+}
+
 function scheduleTurns(state: ConnState, scenario: string, attempt: number): void {
   // Lần kết nối đầu của kịch bản drop chỉ phát DROP_AFTER_TURNS lượt rồi cắt;
   // lần kết nối sau (app tự reconnect) phát tiếp phần còn lại.
   const isDropRun = scenario === "drop" && attempt === 1;
-  const startIndex = scenario === "drop" && attempt > 1 ? DROP_AFTER_TURNS : 0;
-  const endIndex = isDropRun ? DROP_AFTER_TURNS : FIXTURE_TURNS.length;
+  // `drop-mid`: như `drop` nhưng cắt GIỮA lượt tiếp theo (đã có partial, chưa có final) — pair mới phải phiên âm lại trọn lượt đó.
+  const isDropMidRun = scenario === "drop-mid" && attempt === 1;
+  const isReplayRun = (scenario === "drop" || scenario === "drop-mid") && attempt > 1;
+  const startIndex = isReplayRun ? DROP_AFTER_TURNS : 0;
+  const endIndex = isDropRun || isDropMidRun ? DROP_AFTER_TURNS : FIXTURE_TURNS.length;
+  const timing: TokenTiming =
+    scenario !== "drop-mid"
+      ? DEFAULT_TIMING
+      : { ...REALTIME_TIMING, baseMs: isReplayRun ? DROP_AFTER_TURNS * REALTIME_TIMING.stepMs - REPLAY_INTERRUPTED_TURN_START_MS : 0 };
+  if (scenario === "drop-mid" && isReplayRun) scheduleReplayedTail(state);
 
   for (let i = startIndex; i < endIndex; i += 1) {
     const turn = FIXTURE_TURNS[i];
@@ -75,7 +112,7 @@ function scheduleTurns(state: ConnState, scenario: string, attempt: number): voi
       setTimeout(() => {
         if (state.closed) return;
         sendJson(state.socket, {
-          tokens: partialTokens(turn, i),
+          tokens: partialTokens(turn, i, timing),
           final_audio_proc_ms: 0,
           total_audio_proc_ms: i * 4000,
         });
@@ -86,7 +123,7 @@ function scheduleTurns(state: ConnState, scenario: string, attempt: number): voi
       setTimeout(() => {
         if (state.closed) return;
         sendJson(state.socket, {
-          tokens: finalTokens(turn, i, state.channel),
+          tokens: finalTokens(turn, i, state.channel, timing),
           final_audio_proc_ms: (i + 1) * 4000,
           total_audio_proc_ms: (i + 1) * 4000,
         });
@@ -94,15 +131,32 @@ function scheduleTurns(state: ConnState, scenario: string, attempt: number): voi
     );
   }
 
-  if (isDropRun) {
+  if (isDropMidRun) {
+    // Lượt dở: chỉ partial, final không bao giờ tới trên connection này.
+    const interrupted = FIXTURE_TURNS[DROP_AFTER_TURNS];
+    const interruptedFinalAt = FIRST_TURN_DELAY_MS + (DROP_AFTER_TURNS + 1) * TURN_INTERVAL_MS;
+    state.timers.push(
+      setTimeout(() => {
+        if (state.closed) return;
+        sendJson(state.socket, {
+          tokens: partialTokens(interrupted, DROP_AFTER_TURNS, timing),
+          final_audio_proc_ms: 0,
+          total_audio_proc_ms: DROP_AFTER_TURNS * 4000,
+        });
+      }, interruptedFinalAt - TURN_INTERVAL_MS / 2),
+    );
+  }
+
+  if (isDropRun || isDropMidRun) {
     // Cắt phũ (destroy, không close frame) — mô phỏng mất mạng thật để SDK bắn
-    // `disconnected` → app hiện banner vàng rồi tự reconnect.
+    // `disconnected` → app hiện banner vàng rồi tự reconnect. `drop-mid` cắt sau partial của lượt dở, trước final của nó.
+    const dropAt = FIRST_TURN_DELAY_MS + (DROP_AFTER_TURNS + 1) * TURN_INTERVAL_MS - (isDropMidRun ? 100 : 0);
     state.timers.push(
       setTimeout(() => {
         if (state.closed) return;
         state.closed = true;
         state.socket.destroy();
-      }, FIRST_TURN_DELAY_MS + (DROP_AFTER_TURNS + 1) * TURN_INTERVAL_MS),
+      }, dropAt),
     );
   }
 }

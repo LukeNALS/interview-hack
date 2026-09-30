@@ -3,7 +3,8 @@
  * key định kỳ: key single-use, stream sống tới `max_session_duration` — mỗi lần reconnect xin cặp MỚI.
  *
  * Audio is NEVER written to disk/IndexedDB (AC6) — `ReconnectBuffer` is RAM-only, capped
- * at 2 minutes, and cleared immediately after a successful replay.
+ * at 2 minutes, ALWAYS recording (reconnect replays from the last emitted boundary, not just
+ * from the drop) and cleared when the stream stops.
  */
 
 export interface BufferedChunk {
@@ -12,7 +13,7 @@ export interface BufferedChunk {
   captureTs: number;
 }
 
-/** RAM-only buffer for PCM chunks captured while a Soniox connection is down/renewing.
+/** RAM-only buffer of the most recent PCM chunks (always on, not only while a connection is down).
  *  Retention is capped at `maxDurationMs` (default 2 min), measured by capture_ts span —
  *  oldest chunks are evicted first. */
 export class ReconnectBuffer {
@@ -31,17 +32,19 @@ export class ReconnectBuffer {
     }
   }
 
+  /** Chunk có `captureTs >= ts`, đúng thứ tự capture, KHÔNG xoá buffer (buffer luôn ghi nên reconnect lần sau vẫn dùng được). */
+  chunksSince(ts: number): BufferedChunk[] {
+    return this.chunks.filter((c) => c.captureTs >= ts);
+  }
+
+  /** captureTs của chunk cũ nhất còn giữ; null khi rỗng. */
+  get oldestCaptureTs(): number | null {
+    return this.chunks.length > 0 ? this.chunks[0].captureTs : null;
+  }
+
   /** Buffered chunks in capture order, without clearing. */
   peek(): readonly BufferedChunk[] {
     return this.chunks;
-  }
-
-  /** Returns buffered chunks and clears the buffer — call once replay to the new
-   *  connection has been fed successfully (§Architecture "xóa buffer"). */
-  drain(): BufferedChunk[] {
-    const out = this.chunks;
-    this.chunks = [];
-    return out;
   }
 
   clear(): void {

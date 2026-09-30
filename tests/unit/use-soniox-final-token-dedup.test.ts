@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SonioxStreamController, type CanonicalSegment, type EnSegment } from "@/hooks/use-soniox";
 import type { RealtimeToken } from "@soniox/client";
 import type { SonioxSessionFactory, SonioxSessionLike } from "@/lib/soniox/connection";
@@ -51,6 +51,15 @@ function partialToken(text: string, extra: Partial<RealtimeToken> = {}): Realtim
   return { text, is_final: false, start_ms: 0, end_ms: 1000, ...extra } as RealtimeToken;
 }
 
+const EPOCH_MS = 1_000_000;
+
+beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(EPOCH_MS);
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 /** instances[0] = canonical, instances[1] = en (thứ tự openAllReady trong controller). */
 const CANONICAL = 0;
 const EN = 1;
@@ -67,6 +76,8 @@ describe("SonioxStreamController — token provisional không được lọt và
       handlers: { onCanonicalFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — Soniox bắn bản provisional trước, rồi phát LẠI cả câu dưới dạng final.
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは、自己紹介をお", { language: "ja", speaker: "1", start_ms: 120, end_ms: 1200 }));
@@ -89,6 +100,8 @@ describe("SonioxStreamController — token provisional không được lọt và
       handlers: { onCanonicalFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは"));
@@ -109,6 +122,8 @@ describe("SonioxStreamController — token provisional không được lọt và
       handlers: { onPartial },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — đuôi provisional lớn dần theo từng response.
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは", { start_ms: 120, end_ms: 600 }));
@@ -129,6 +144,8 @@ describe("SonioxStreamController — token provisional không được lọt và
       handlers: { onPartial },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — response 1: [120,600]; response 2: phát lại [120,600] + phần mới [600,1200].
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは", { start_ms: 120, end_ms: 600 }));
@@ -150,6 +167,8 @@ describe("SonioxStreamController — token provisional không được lọt và
       handlers: { onEnFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — "Hello, please" provisional rồi "Hello, please introduce yourself" final.
     instances[EN].handlers["token"]?.(finalToken("こんにちは", { language: "ja" }));
@@ -173,6 +192,8 @@ describe("SonioxStreamController — token provisional không được lọt và
       handlers: { onCanonicalFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — câu 1 final + đuôi provisional dư, endpoint, rồi câu 2.
     instances[CANONICAL].handlers["token"]?.(finalToken("câu một", { start_ms: 0, end_ms: 900 }));

@@ -44,8 +44,10 @@ describe("SonioxStreamController — C1 fix: reconnect() wired cho disconnect ng
   test("test_soniox_stream_controller_reconnect_does_not_drop_chunks_fed_while_awaiting_ready", async () => {
     // Arrange — bug thứ cấp đã fix: drain() trước đây chạy TRƯỚC await openAllReady(), khiến
     // chunk tới trong lúc chờ ready (vẫn degraded=true nên vẫn buffer) bị bỏ sót vĩnh viễn.
+    vi.spyOn(Date, "now").mockReturnValue(1100); // đồng hồ khớp captureTs giả (1000/1050): replay chỉ lấy audio trong 30 s gần nhất
     const { factory, instances } = makeGatedSessionFactory();
-    const controller = new SonioxStreamController({ mode: "online", label: "mic", sessionFactory: factory, handlers: {} });
+    const onCanonicalFinal = vi.fn();
+    const controller = new SonioxStreamController({ mode: "online", label: "mic", sessionFactory: factory, handlers: { onCanonicalFinal } });
     await openImmediately(controller, pairKeys("initial"), instances);
 
     instances[0].handlers["disconnected"]?.(); // rớt -> feed() giờ buffer RAM, không fan-out
@@ -73,7 +75,10 @@ describe("SonioxStreamController — C1 fix: reconnect() wired cho disconnect ng
       [1, 1, 1, 1],
       [2, 2, 2, 2],
     ]);
-    expect(controller.getEpochConnMs()).toBe(1000);
+    // Mốc tuyệt đối của pair MỚI = epoch_conn (capture_ts chunk đầu = 1000) + start tương đối của token.
+    instances[2].handlers["token"]?.({ text: "x", is_final: true, start_ms: 500, end_ms: 900 });
+    instances[2].handlers["endpoint"]?.();
+    expect(onCanonicalFinal).toHaveBeenCalledWith(expect.objectContaining({ startAbsMs: 1500, endAbsMs: 1900 }));
   });
 
   test("test_soniox_stream_controller_intentional_stop_does_not_trigger_reconnect", async () => {

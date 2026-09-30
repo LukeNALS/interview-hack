@@ -3,9 +3,12 @@
 import type { RealtimeToken } from "@soniox/client";
 import { classifySonioxRealtimeError, type FatalKind } from "@/lib/soniox/classify-realtime-error";
 import { buildSonioxConfigs, type SonioxCaptureMode } from "@/lib/soniox/config";
+import { accOf, connOf, type ConnKind, type ConnectionGeneration } from "@/lib/soniox/connection-generation";
 import { SonioxConnection, type PairKeys, type SonioxSessionFactory } from "@/lib/soniox/connection";
 import { closeAll, fanOutChunk, openAllReady } from "@/lib/soniox/fanout";
 import { epochConnForReplay, ReconnectBuffer } from "@/lib/soniox/reconnect";
+import { clampReplayStart, computeReplayWindow } from "@/lib/soniox/replay-window";
+import { TokenSegmentAccumulator, type FlushedSegment } from "@/lib/soniox/token-segment-accumulator";
 
 /**
  * `SonioxStreamController` — quản lý 1 CẶP connection (canonical two_way
@@ -17,100 +20,19 @@ import { epochConnForReplay, ReconnectBuffer } from "@/lib/soniox/reconnect";
  * Token->utterance aggregation (theo `<end>` boundary) nằm ở đây vì
  * `align.ts`/`utterance-builder.ts` (Wave A) chỉ nhận input ĐÃ gộp sẵn
  * (xem phase-05-client-report.md — "align.ts KHÔNG tự đọc token thô").
- */
-
-interface FlushedSegment {
-  textOrig: string;
-  textTranslation: string | null;
-  language: string | null;
-  speaker: string | null;
-  startMs: number;
-  endMs: number;
-}
-
-/**
- * Gộp token thô -> 1 segment mỗi khi hết câu (enable_endpoint_detection).
  *
- * CẢNH BÁO: `feed()` chỉ chốt khi thấy token `<end>` — nhưng SDK @soniox/client
- * LỌC BỎ `<end>`/`<fin>` khỏi token trước khi emit (`filterSpecialTokens`,
- * dist/index.mjs:962) và bắn `endpoint` thành event RIÊNG. Nên ở production
- * đường chốt duy nhất là event đó -> `handleEndpoint()` gọi `flush()` trực tiếp.
- * Nhánh `<end>` trong feed() giữ lại cho transport thô (POC/mock) còn thấy token này.
- *
- * CHỈ token `is_final === true` được vào segment. Soniox bắn token provisional
- * (`is_final: false`) rồi PHÁT LẠI đúng đoạn đó ở response sau dưới dạng bản final đầy
- * đủ hơn — gộp cả hai làm transcript lặp phần đầu câu (bug P07, dữ liệu thật trong DB:
- * "こんにちは、自己紹介をお" + "こんにちは、自己紹介をお願いします"). Đây cũng là cách
- * SDK tự làm cho utterance collector của nó (`final_only: true`, dist/index.mjs:1568).
+ * Mỗi lần reconnect dựng 1 THẾ HỆ connection mới (xem `connection-generation.ts`): accumulator riêng,
+ * thời gian segment là mốc tuyệt đối trên đồng hồ capture (`epoch_conn` của chính connection phát ra + ms
+ * tương đối của token), nên segment của thế hệ cũ và mới không ghép chéo và không lệch trục.
  */
-class TokenSegmentAccumulator {
-  /** Token ĐÃ final của câu đang nói — nguồn duy nhất dựng FlushedSegment. */
-  private original: RealtimeToken[] = [];
-  private translation: RealtimeToken[] = [];
-  /** Đuôi provisional hiện tại (nhánh original) — chỉ để vẽ bubble mờ, KHÔNG bao giờ vào segment. */
-  private pending: RealtimeToken[] = [];
-
-  feed(token: RealtimeToken): FlushedSegment | null {
-    if (token.text === "<end>") return this.flush();
-    if (!token.is_final) {
-      // Token dịch provisional bỏ hẳn: bubble mờ chỉ hiện text gốc (partialText).
-      if (token.translation_status !== "translation") this.pushPending(token);
-      return null;
-    }
-    // Bản final đã tới -> đuôi provisional cũ hết giá trị (nội dung của nó nằm trong bản final).
-    this.pending = [];
-    if (token.translation_status === "translation") this.translation.push(token);
-    else this.original.push(token);
-    return null;
-  }
-
-  /**
-   * Mỗi response Soniox gửi LẠI toàn bộ đuôi provisional (bản sửa mới nhất) chứ không gửi
-   * thêm phần đuôi mới — token quay về mốc `start_ms` cũ nghĩa là đuôi mới bắt đầu: cắt
-   * phần cũ từ mốc đó rồi mới nối, tránh bubble nối chồng bản cũ.
-   */
-  private pushPending(token: RealtimeToken): void {
-    const start = token.start_ms;
-    if (start !== undefined) {
-      const overlapAt = this.pending.findIndex((t) => (t.start_ms ?? -1) >= start);
-      if (overlapAt >= 0) this.pending.length = overlapAt;
-    }
-    this.pending.push(token);
-  }
-
-  partialText(): string {
-    return [...this.original, ...this.pending].map((t) => t.text).join("");
-  }
-
-  /**
-   * Chốt segment đang tích luỹ. PUBLIC vì đường chốt THẬT ở production là event
-   * `endpoint` của SDK, không phải token `<end>` — xem handleEndpoint().
-   */
-  flush(): FlushedSegment | null {
-    const original = this.original;
-    const translation = this.translation;
-    this.original = [];
-    this.translation = [];
-    // Đuôi provisional chưa kịp finalize thuộc về câu vừa chốt -> vứt, không để dính sang câu sau.
-    this.pending = [];
-    if (original.length === 0) return null;
-    return {
-      textOrig: original.map((t) => t.text).join(""),
-      textTranslation: translation.length > 0 ? translation.map((t) => t.text).join("") : null,
-      language: original.find((t) => t.language)?.language ?? null,
-      speaker: original.find((t) => t.speaker)?.speaker ?? null,
-      startMs: original[0].start_ms ?? 0,
-      endMs: original[original.length - 1].end_ms ?? original[0].start_ms ?? 0,
-    };
-  }
-}
 
 export interface CanonicalSegment {
   textOrig: string;
   language: string | null;
   speaker: string | null;
-  startMs: number;
-  endMs: number;
+  /** Mốc TUYỆT ĐỐI (ms đồng hồ capture `Date.now()`) = epoch_conn của connection phát + start tương đối. */
+  startAbsMs: number;
+  endAbsMs: number;
   /** vi/ja suy từ ngôn ngữ nguồn — null nếu nguồn không phải ja/vi (noop, xem fixture canonical-english-only-noop). */
   translationVi: string | null;
   translationJa: string | null;
@@ -118,8 +40,8 @@ export interface CanonicalSegment {
 
 export interface EnSegment {
   textEn: string | null;
-  startMs: number;
-  endMs: number;
+  startAbsMs: number;
+  endAbsMs: number;
 }
 
 export interface SonioxStreamHandlers {
@@ -136,19 +58,23 @@ export interface SonioxStreamHandlers {
   onError?: (err: Error) => void;
 }
 
-type ConnKind = "canonical" | "en";
-
 export class SonioxStreamController {
   private readonly configs: ReturnType<typeof buildSonioxConfigs>;
   private readonly handlers: SonioxStreamHandlers;
   private readonly label: string;
   /** DI hook cho test (không đổi hành vi prod — mặc định undefined -> SonioxConnection tự dùng SDK thật). */
   private readonly sessionFactory: SonioxSessionFactory | undefined;
-  private canonical: SonioxConnection;
-  private en: SonioxConnection;
-  private readonly canonicalAcc = new TokenSegmentAccumulator();
-  private readonly enAcc = new TokenSegmentAccumulator();
+  private nextGenerationId = 1;
+  private current: ConnectionGeneration;
+  /** Buffer audio RAM LUÔN ghi (cap 2 phút) — reconnect replay từ mốc cuối đã emit, không chỉ từ lúc rớt. */
   private readonly reconnectBuffer = new ReconnectBuffer();
+  /** Mốc kết thúc tuyệt đối của segment cuối đã emit theo loại — cơ sở chọn điểm replay + cổng token thế hệ mới. */
+  private readonly lastEmitted: Record<ConnKind, number> = {
+    canonical: Number.NEGATIVE_INFINITY,
+    en: Number.NEGATIVE_INFINITY,
+  };
+  /** captureTs chunk cuối đã fan-out cho pair hiện tại — mốc "lúc rớt" để tính trần look-back của replay. */
+  private lastFanOutTs = Number.NEGATIVE_INFINITY;
   private degraded = false;
   /** true khi đóng chủ động (stop()) HOẶC sau lỗi không thử lại được (reportFatal) — chặn onDisconnected
    *  trigger reconnect (C1 fix) và làm `onFatal` chỉ bắn 1 lần dù cả 2 connection cùng lỗi. */
@@ -164,19 +90,32 @@ export class SonioxStreamController {
     this.handlers = opts.handlers;
     this.label = opts.label;
     this.sessionFactory = opts.sessionFactory;
-    this.canonical = this.createConnection("canonical");
-    this.en = this.createConnection("en");
+    this.current = this.createGeneration();
   }
 
-  private createConnection(kind: ConnKind): SonioxConnection {
+  private createGeneration(): ConnectionGeneration {
+    const gen = {
+      id: this.nextGenerationId++,
+      canonicalAcc: new TokenSegmentAccumulator(),
+      enAcc: new TokenSegmentAccumulator(),
+      gate: { canonical: Number.NEGATIVE_INFINITY, en: Number.NEGATIVE_INFINITY },
+      gateOpen: { canonical: false, en: false },
+    } as ConnectionGeneration;
+    gen.canonical = this.createConnection("canonical", gen);
+    gen.en = this.createConnection("en", gen);
+    return gen;
+  }
+
+  private createConnection(kind: ConnKind, gen: ConnectionGeneration): SonioxConnection {
     const conn = new SonioxConnection({
       config: this.configs[kind],
       label: `${this.label}-${kind}`,
       sessionFactory: this.sessionFactory,
     });
     conn.setHandlers({
-      onToken: (token) => this.handleToken(kind, token),
-      onEndpoint: () => this.handleEndpoint(kind),
+      onToken: (token) => this.handleToken(gen, kind, token),
+      onEndpoint: () => this.handleEndpoint(gen, kind),
+      onFinished: () => this.handleFinished(gen, kind),
       onDisconnected: () => this.handleDisconnected(conn),
       onConnected: () => this.handleConnected(),
       onError: (err) => this.handleError(conn, err),
@@ -187,13 +126,13 @@ export class SonioxStreamController {
   /** Mở cả 2 connection, mỗi connection 1 key single-use riêng — chờ cả 2 ready (§Architecture). */
   async open(keys: PairKeys): Promise<void> {
     try {
-      await openAllReady([this.canonical, this.en], [keys.canonical, keys.en]);
+      await openAllReady([this.current.canonical, this.current.en], [keys.canonical, keys.en]);
     } catch (err) {
       // Mở dở (vd canonical lên, en timeout 20 s): connection đã lên không ai giữ ⇒ rò WebSocket. Set
       // `stopped` TRƯỚC khi close để `disconnected` do chính close() bắn ra không kích hoạt reconnect.
       this.stopped = true;
-      this.canonical.close();
-      this.en.close();
+      this.current.canonical.close();
+      this.current.en.close();
       throw err;
     }
   }
@@ -203,18 +142,14 @@ export class SonioxStreamController {
     return this.stopped;
   }
 
-  /** Bơm 1 chunk PCM (từ pcm-worklet). Degraded -> buffer RAM (reconnect), không fan-out. */
+  /** Bơm 1 chunk PCM (từ pcm-worklet): luôn ghi buffer RAM (để replay khi reconnect); đang degraded thì không fan-out. */
   feed(chunk: ArrayBuffer, captureTs: number): void {
+    if (this.stopped) return; // đã đóng (kể cả lỗi fatal): không còn connection để gửi, không giữ audio vô ích
     const data = new Uint8Array(chunk);
-    if (this.degraded) {
-      this.reconnectBuffer.push(data, captureTs);
-      return;
-    }
-    fanOutChunk([this.canonical, this.en], data);
-  }
-
-  getEpochConnMs(): number | null {
-    return this.canonical.getEpochConnMs();
+    this.reconnectBuffer.push(data, captureTs);
+    if (this.degraded) return;
+    this.lastFanOutTs = captureTs;
+    fanOutChunk([this.current.canonical, this.current.en], data);
   }
 
   /** `conn` = wrapper vừa rớt — bỏ qua nếu: (a) đang/đã stop() chủ động, hoặc (b) `conn` không
@@ -222,8 +157,12 @@ export class SonioxStreamController {
    *  overlap window — SDK có thể tự bắn "disconnected" khi close() dù là đóng chủ động, C1/M2 fix). */
   private handleDisconnected(conn: SonioxConnection): void {
     if (this.stopped) return;
-    if (conn !== this.canonical && conn !== this.en) return;
+    if (!this.isCurrentConnection(conn)) return;
     this.markDegraded();
+  }
+
+  private isCurrentConnection(conn: SonioxConnection): boolean {
+    return conn === this.current.canonical || conn === this.current.en;
   }
 
   /** Idempotent: `disconnected` + `error` (ConnectionError) cùng đến khi WS rớt, chỉ báo 1 lần. */
@@ -242,7 +181,7 @@ export class SonioxStreamController {
   private handleError(conn: SonioxConnection, err: Error): void {
     this.handlers.onError?.(err);
     if (this.stopped) return;
-    if (conn !== this.canonical && conn !== this.en) return;
+    if (!this.isCurrentConnection(conn)) return;
     const kind = classifySonioxRealtimeError(err);
     if (kind === "retry") this.markDegraded();
     else this.reportFatal(kind, err);
@@ -253,7 +192,8 @@ export class SonioxStreamController {
   private reportFatal(kind: FatalKind, err: Error): void {
     this.stopped = true;
     this.degraded = true;
-    void closeAll([this.canonical, this.en]).catch(() => {});
+    this.reconnectBuffer.clear();
+    void closeAll([this.current.canonical, this.current.en]).catch(() => {});
     this.handlers.onFatal?.(kind, err);
   }
 
@@ -262,26 +202,18 @@ export class SonioxStreamController {
   }
 
   /**
-   * Mất kết nối giữa buổi -> mở pair mới, epoch_conn = capture_ts chunk đầu buffer (fix B13),
-   * replay buffer, đóng pair cũ.
-   *
-   * Bug thứ cấp đã fix (code review C1): trước đây `drain()` chạy TRƯỚC `await openAllReady()`
-   * -> chunk capture trong lúc await (feed() vẫn thấy `degraded=true` nên vẫn buffer) bị bỏ sót
-   * vĩnh viễn (không nằm trong buffer đã drain, và feed() sau khi degraded=false không đọc buffer
-   * nữa). Fix: KHÔNG động vào buffer cho tới khi pair mới đã ready — feed() trong lúc await vẫn
-   * tự buffer bình thường (degraded vẫn true suốt hàm này) -> drain() 1 LẦN DUY NHẤT sau khi ready,
-   * giữ đúng thứ tự chunk (kể cả chunk tới muộn trong lúc await) + epoch_conn = capture_ts chunk
-   * ĐẦU TIÊN (từ trước khi reconnect() được gọi, không đổi).
+   * Mất kết nối giữa buổi -> mở THẾ HỆ connection mới (cặp key mới), phiên âm lại audio từ mốc cuối đã emit (`replayInto`),
+   * rồi swap và đóng thế hệ cũ ngay. `feed()` trong lúc await vẫn tự ghi buffer (degraded còn true suốt hàm này) nên audio
+   * tới muộn cũng nằm trong replay; buffer KHÔNG bị xoá (luôn ghi, lần reconnect sau dùng lại).
    */
   async reconnect(keys: PairKeys): Promise<void> {
-    const newCanonical = this.createConnection("canonical");
-    const newEn = this.createConnection("en");
+    const next = this.createGeneration();
     try {
-      await openAllReady([newCanonical, newEn], [keys.canonical, keys.en]);
+      await openAllReady([next.canonical, next.en], [keys.canonical, keys.en]);
     } catch (err) {
       // Mở dở: connection đã lên không ai giữ (pair mới chưa phải hiện tại nên handler bỏ qua sự kiện của nó).
-      newCanonical.close();
-      newEn.close();
+      next.canonical.close();
+      next.en.close();
       throw err;
     }
     // Code review round 2 (NEW-1): stop() có thể xảy ra GIỮA lúc await ở trên đang chờ (endInterview()/
@@ -289,54 +221,108 @@ export class SonioxStreamController {
     // nào (streamsRef.current đã bị clear), không được swap vào/bắn onRestored(); đóng ngay để tránh leak
     // WebSocket (đốt quota Soniox), không đụng buffer/degraded (stop() đã tự lo phần đó).
     if (this.stopped) {
-      await closeAll([newCanonical, newEn]);
+      await closeAll([next.canonical, next.en]);
       return;
     }
     // Lỗi server đến từ pair MỚI trước khi swap (vd 401 ~230 ms sau connect, lúc connection kia còn đang
     // mở): handleError bỏ qua vì chưa phải connection hiện tại ⇒ kiểm ở đây. Chưa feed audio nào nên
     // chỉ cần close(). retry ⇒ ném để backoff xin cặp key MỚI; không thử lại được ⇒ báo, KHÔNG swap.
-    const errors = [newCanonical.error, newEn.error].filter((e): e is Error => e !== null);
+    const errors = [next.canonical.error, next.en.error].filter((e): e is Error => e !== null);
     // Ưu tiên lỗi KHÔNG thử lại được (403/402/400...) để không che nó bằng lỗi retry của connection kia.
     const dead = errors.find((e) => classifySonioxRealtimeError(e) !== "retry") ?? errors[0];
     if (dead) {
-      newCanonical.close();
-      newEn.close();
+      next.canonical.close();
+      next.en.close();
       const kind = classifySonioxRealtimeError(dead);
       if (kind === "retry") throw dead;
       this.reportFatal(kind, dead);
       return;
     }
-    const buffered = this.reconnectBuffer.drain();
-    const epoch = epochConnForReplay(buffered);
-    if (epoch !== null) {
-      newCanonical.setEpochConnMs(epoch);
-      newEn.setEpochConnMs(epoch);
+    try {
+      this.replayInto(next);
+    } catch (err) {
+      // replay ném (sendAudio trên session chết → StateError, hoặc handler ném khi chốt final): pair mới chưa là hiện tại
+      // nên không ai khác đóng — đóng ở đây, pair cũ giữ nguyên, để backoff thử lại với cặp key mới.
+      next.canonical.close();
+      next.en.close();
+      throw err;
     }
-    for (const chunk of buffered) fanOutChunk([newCanonical, newEn], chunk.data);
-    this.swapConnections(newCanonical, newEn);
+    this.swapGeneration(next);
     this.degraded = false;
     this.handlers.onRestored?.();
   }
 
-  private swapConnections(newCanonical: SonioxConnection, newEn: SonioxConnection): void {
-    const oldCanonical = this.canonical;
-    const oldEn = this.en;
-    this.canonical = newCanonical;
-    this.en = newEn;
-    setTimeout(() => {
-      oldCanonical.close();
-      oldEn.close();
-    }, 1000);
+  /**
+   * Phiên âm lại từ mốc cuối đã emit: replay audio vào pair MỚI (epoch_conn = capture_ts chunk đầu được replay, fix B13)
+   * và đặt cổng bỏ token đã emit. Nói liền quá 30 s hoặc buffer không phủ tới mốc thì chốt final của pair cũ trước.
+   */
+  private replayInto(next: ConnectionGeneration): void {
+    const dropTs = this.lastFanOutTs;
+    const plan = (): ReturnType<typeof computeReplayWindow> =>
+      computeReplayWindow({
+        lastEmittedEndAbsMs: this.lastEmitted,
+        bufferOldestTs: this.reconnectBuffer.oldestCaptureTs,
+        dropTs,
+      });
+    let replayFromTs = plan().replayFromTs;
+    if (plan().needsFlush) {
+      // Câu có thể bị tách đôi ở chỗ này, nhưng phần đã nói không bị mất và mốc tiến lên để replay ngắn lại.
+      this.flushGenerationFinals(this.current);
+      replayFromTs = clampReplayStart(plan().replayFromTs, this.reconnectBuffer.oldestCaptureTs, dropTs);
+    }
+    next.gate.canonical = this.lastEmitted.canonical;
+    next.gate.en = this.lastEmitted.en;
+    const chunks = this.reconnectBuffer.chunksSince(replayFromTs);
+    const epoch = epochConnForReplay(chunks);
+    if (epoch !== null) {
+      next.canonical.setEpochConnMs(epoch);
+      next.en.setEpochConnMs(epoch);
+    }
+    for (const chunk of chunks) fanOutChunk([next.canonical, next.en], chunk.data);
   }
 
-  private handleToken(kind: ConnKind, token: RealtimeToken): void {
-    const acc = kind === "canonical" ? this.canonicalAcc : this.enAcc;
+  private swapGeneration(next: ConnectionGeneration): void {
+    const previous = this.current;
+    this.current = next;
+    // Pair cũ đóng NGAY và mọi event của nó bị bỏ (handler kiểm `gen === this.current`): phần chưa chốt của nó đã được
+    // pair mới phiên âm lại từ mốc cuối đã emit, giữ lại chỉ sinh câu lặp.
+    previous.canonical.close();
+    previous.en.close();
+  }
+
+  /**
+   * Cổng chống phát lần hai: token thuộc phần ĐÃ emit trước khi rớt (pair mới phiên âm lại từ mốc − 300 ms) thì bỏ.
+   *  - Token gốc: so ĐIỂM GIỮA token với cổng (không so mốc kết thúc) — hai phiên Soniox độc lập gán mốc cho cùng một từ
+   *    lệch nhau vài chục ms, so cứng sẽ lọt đuôi từ cuối thành mảnh/câu lặp; điểm giữa chịu được lệch tới nửa độ dài token.
+   *  - Token dịch không có `start_ms`/`end_ms`: đi theo trạng thái — bỏ cho tới khi token gốc đầu tiên của loại đó vượt cổng.
+   * @returns true nếu token phải bỏ.
+   */
+  private isBeforeGate(gen: ConnectionGeneration, kind: ConnKind, token: RealtimeToken): boolean {
+    const gate = gen.gate[kind];
+    if (gate === Number.NEGATIVE_INFINITY) return false; // thế hệ đầu, hoặc loại này chưa emit gì: không có gì để chặn
+    if (token.translation_status === "translation") return !gen.gateOpen[kind];
+    const startMs = token.start_ms ?? token.end_ms;
+    const endMs = token.end_ms ?? token.start_ms;
+    const epoch = connOf(gen, kind).getEpochConnMs();
+    if (startMs === undefined || endMs === undefined || epoch === null) {
+      gen.gateOpen[kind] = true;
+      return false;
+    }
+    const before = epoch + (startMs + endMs) / 2 <= gate;
+    if (!before) gen.gateOpen[kind] = true;
+    return before;
+  }
+
+  private handleToken(gen: ConnectionGeneration, kind: ConnKind, token: RealtimeToken): void {
+    if (gen !== this.current || this.isBeforeGate(gen, kind, token)) return;
+    const acc = accOf(gen, kind);
     const flushed = acc.feed(token);
     if (!flushed) {
+      // Bubble mờ chỉ vẽ từ canonical (thế hệ cũ đã bị chặn ở dòng đầu hàm).
       if (kind === "canonical") this.handlers.onPartial?.(acc.partialText());
       return;
     }
-    this.emitSegment(kind, flushed);
+    this.emitSegment(gen, kind, flushed);
   }
 
   /**
@@ -345,37 +331,72 @@ export class SonioxStreamController {
    * thiếu handler này thì onCanonicalFinal/onEnFinal KHÔNG BAO GIỜ bắn và không
    * utterance nào được POST lên /utterances (bug P07, phát hiện qua E2E).
    */
-  private handleEndpoint(kind: ConnKind): void {
-    const acc = kind === "canonical" ? this.canonicalAcc : this.enAcc;
-    const flushed = acc.flush();
+  private handleEndpoint(gen: ConnectionGeneration, kind: ConnKind): void {
+    if (gen === this.current) this.emitPending(gen, kind);
+  }
+
+  /** `finished` của SDK: `finish()` xả câu dở thì final có thể về mà KHÔNG kèm endpoint (E7) — chốt ở đây. */
+  private handleFinished(gen: ConnectionGeneration, kind: ConnKind): void {
+    if (gen === this.current) this.emitPending(gen, kind);
+  }
+
+  /** Chốt phần final đang tích luỹ của 1 thế hệ (bỏ đuôi provisional) thành segment — không kiểm thế hệ hiện tại. */
+  private emitPending(gen: ConnectionGeneration, kind: ConnKind): void {
+    const flushed = accOf(gen, kind).flush();
     if (!flushed) return;
-    this.emitSegment(kind, flushed);
+    this.emitSegment(gen, kind, flushed);
     if (kind === "canonical") this.handlers.onPartial?.("");
   }
 
-  private emitSegment(kind: ConnKind, flushed: FlushedSegment): void {
+  private emitSegment(gen: ConnectionGeneration, kind: ConnKind, flushed: FlushedSegment): void {
+    // Mốc tuyệt đối theo epoch của CHÍNH connection phát. Chưa feed chunk nào (epoch null) thì không có
+    // trục để đặt segment lên — bỏ (token thật không thể tới trước khi có audio).
+    const epoch = connOf(gen, kind).getEpochConnMs();
+    if (epoch === null) return;
+    const startAbsMs = epoch + flushed.startMs;
+    const endAbsMs = epoch + flushed.endMs;
+    this.lastEmitted[kind] = Math.max(this.lastEmitted[kind], endAbsMs);
     if (kind === "canonical") {
       const sourceLang = flushed.language;
       this.handlers.onCanonicalFinal?.({
         textOrig: flushed.textOrig,
         language: flushed.language,
         speaker: flushed.speaker,
-        startMs: flushed.startMs,
-        endMs: flushed.endMs,
+        startAbsMs,
+        endAbsMs,
         translationVi: sourceLang === "ja" ? flushed.textTranslation : null,
         translationJa: sourceLang === "vi" ? flushed.textTranslation : null,
       });
     } else {
-      this.handlers.onEnFinal?.({
-        textEn: flushed.textTranslation,
-        startMs: flushed.startMs,
-        endMs: flushed.endMs,
-      });
+      this.handlers.onEnFinal?.({ textEn: flushed.textTranslation, startAbsMs, endAbsMs });
     }
   }
 
-  async stop(): Promise<void> {
+  private flushGenerationFinals(gen: ConnectionGeneration): void {
+    this.emitPending(gen, "canonical");
+    this.emitPending(gen, "en");
+  }
+
+  /** Đóng NGAY (unmount/lỗi). `flushPending`: chốt nốt phần final đã có của thế hệ hiện tại trước khi đóng — dùng khi
+   *  bỏ cuộc reconnect để bớt mất câu đang nói. */
+  async stop(opts: { flushPending?: boolean } = {}): Promise<void> {
+    if (opts.flushPending) this.flushGenerationFinals(this.current);
     this.stopped = true;
-    await closeAll([this.canonical, this.en]);
+    this.reconnectBuffer.clear();
+    await closeAll([this.current.canonical, this.current.en]);
+  }
+
+  /**
+   * Dừng êm khi người dùng bấm Kết thúc: `finish()` từng connection (song song, tối đa `timeoutMs`) để câu đang nói
+   * và bản dịch của nó về kịp, rồi chốt nốt mọi phần final còn tích luỹ (kể cả khi hết timeout mà chưa `finished`).
+   * Khác `stop()` ở chỗ có drain — `stop()` vẫn là đường đóng NGAY cho unmount/lỗi. Gọi khi đã dừng là no-op.
+   */
+  async drainAndStop(timeoutMs: number): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    const gen = this.current;
+    await Promise.all([gen.canonical.drain(timeoutMs), gen.en.drain(timeoutMs)]);
+    this.flushGenerationFinals(gen);
+    this.reconnectBuffer.clear();
   }
 }

@@ -41,6 +41,22 @@ export interface SonioxToken {
   translation_status?: "original" | "translation";
 }
 
+/**
+ * Bố cục thời gian token. Mặc định: 1 lượt = 4 s (mỗi lượt cách nhau rất xa nhau theo mốc token dù mock phát nhanh hơn thật) —
+ * đủ cho mọi ca không đụng tới mốc thời gian. `REALTIME_TIMING`: mốc token bám đúng nhịp phát của mock (0,5 s/lượt) để kịch bản
+ * `drop-mid` kiểm được replay từ mốc cuối + cổng token trên một timeline nhất quán với audio thật. `baseMs` = mốc 0 của connection.
+ */
+export interface TokenTiming {
+  stepMs: number;
+  gapMs: number;
+  lenMs: number;
+  partialGapMs: number;
+  partialLenMs: number;
+  baseMs: number;
+}
+export const DEFAULT_TIMING: TokenTiming = { stepMs: 4000, gapMs: 400, lenMs: 380, partialGapMs: 300, partialLenMs: 280, baseMs: 0 };
+export const REALTIME_TIMING: TokenTiming = { stepMs: 500, gapMs: 140, lenMs: 130, partialGapMs: 140, partialLenMs: 130, baseMs: 0 };
+
 /** Chia text thành vài mảnh để mô phỏng token streaming — cắt theo ĐỘ DÀI CỐ ĐỊNH, không random. */
 function chunkText(text: string, pieces: number): string[] {
   const size = Math.ceil(text.length / pieces);
@@ -50,8 +66,8 @@ function chunkText(text: string, pieces: number): string[] {
 }
 
 /** Token partial (chưa `<end>`) — app hiển thị bubble mờ opacity-55. */
-export function partialTokens(turn: FixtureTurn, index: number): SonioxToken[] {
-  const startMs = index * 4000;
+export function partialTokens(turn: FixtureTurn, index: number, timing: TokenTiming = DEFAULT_TIMING): SonioxToken[] {
+  const startMs = index * timing.stepMs - timing.baseMs;
   return chunkText(turn.orig, 3)
     .slice(0, 2)
     .map((text, i) => ({
@@ -60,8 +76,8 @@ export function partialTokens(turn: FixtureTurn, index: number): SonioxToken[] {
       is_final: false,
       language: turn.lang,
       speaker: turn.lang === "ja" ? "1" : "2",
-      start_ms: startMs + i * 300,
-      end_ms: startMs + i * 300 + 280,
+      start_ms: startMs + i * timing.partialGapMs,
+      end_ms: startMs + i * timing.partialGapMs + timing.partialLenMs,
       translation_status: "original" as const,
     }));
 }
@@ -72,8 +88,13 @@ export function partialTokens(turn: FixtureTurn, index: number): SonioxToken[] {
  *  - `canonical` (two_way ja↔vi) → translation = `counterpart`
  *  - `en` (one_way → en)         → translation = `en`
  */
-export function finalTokens(turn: FixtureTurn, index: number, channel: "canonical" | "en"): SonioxToken[] {
-  const startMs = index * 4000;
+export function finalTokens(
+  turn: FixtureTurn,
+  index: number,
+  channel: "canonical" | "en",
+  timing: TokenTiming = DEFAULT_TIMING,
+): SonioxToken[] {
+  const startMs = index * timing.stepMs - timing.baseMs;
   const speaker = turn.lang === "ja" ? "1" : "2";
   const original = chunkText(turn.orig, 3).map((text, i) => ({
     text,
@@ -81,8 +102,8 @@ export function finalTokens(turn: FixtureTurn, index: number, channel: "canonica
     is_final: true,
     language: turn.lang,
     speaker,
-    start_ms: startMs + i * 400,
-    end_ms: startMs + i * 400 + 380,
+    start_ms: startMs + i * timing.gapMs,
+    end_ms: startMs + i * timing.gapMs + timing.lenMs,
     translation_status: "original" as const,
   }));
   const translated = channel === "canonical" ? turn.counterpart : turn.en;
