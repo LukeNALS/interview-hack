@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SonioxStreamController, type CanonicalSegment, type EnSegment } from "@/hooks/use-soniox";
 import type { RealtimeToken } from "@soniox/client";
 import type { SonioxSessionFactory, SonioxSessionLike } from "@/lib/soniox/connection";
@@ -55,6 +55,15 @@ function token(text: string, extra: Partial<RealtimeToken> = {}): RealtimeToken 
   return { text, is_final: true, start_ms: 0, end_ms: 1000, ...extra } as RealtimeToken;
 }
 
+const EPOCH_MS = 1_000_000;
+
+beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(EPOCH_MS);
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 /** instances[0] = canonical, instances[1] = en (thứ tự openAllReady trong controller). */
 const CANONICAL = 0;
 const EN = 1;
@@ -71,6 +80,8 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       handlers: { onCanonicalFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — token thường (KHÔNG có `<end>`, đúng như SDK sau filterSpecialTokens),
     // rồi SDK bắn `endpoint` báo hết câu.
@@ -84,7 +95,7 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
     expect(segment.textOrig).toBe("Tổng quan về Chuyển đổi số");
     expect(segment.language).toBe("vi");
     expect(segment.speaker).toBe("spk-1");
-    expect(segment.endMs).toBe(2400);
+    expect(segment.endAbsMs).toBe(EPOCH_MS + 2400);
   });
 
   test("test_soniox_controller_sdk_endpoint_event_flushes_en_translation_segment", async () => {
@@ -98,6 +109,8 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       handlers: { onEnFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — connection `en` (one_way -> en) nhận CẢ token gốc LẪN token dịch:
     // accumulator chốt theo `original`, `textEn` lấy từ nhánh `translation`.
@@ -123,6 +136,8 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       handlers: { onCanonicalFinal, onPartial },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act — KHÔNG bắn `endpoint`.
     instances[CANONICAL].handlers["token"]?.(token("chưa hết câu"));
@@ -143,6 +158,8 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       handlers: { onCanonicalFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act
     instances[CANONICAL].handlers["endpoint"]?.();
@@ -162,6 +179,8 @@ describe("SonioxStreamController — chốt segment qua event `endpoint` của S
       handlers: { onCanonicalFinal },
     });
     await controller.open({ canonical: "key-canonical", en: "key-en" });
+    // Token thật chỉ tới SAU khi có audio: bơm 1 chunk để connection có epoch_conn (mốc tuyệt đối = epoch + start).
+    controller.feed(new Uint8Array(2).buffer, EPOCH_MS);
 
     // Act
     instances[CANONICAL].handlers["token"]?.(token("câu một"));

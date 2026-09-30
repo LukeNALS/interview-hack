@@ -17,7 +17,14 @@ export interface GatedInstance {
   rejectConnect: (err: Error) => void;
 }
 
-export function makeGatedSessionFactory() {
+export interface GatedFactoryOptions {
+  /** Hành vi `finish()` của mọi session giả (mặc định: resolve ngay). Nhận instance để phát token/`finished`. */
+  finish?: (record: GatedInstance) => Promise<void>;
+  /** Chạy TRƯỚC khi ghi chunk vào `sentChunks` — test ném lỗi ở đây để mô phỏng `sendAudio` ném `StateError` trên session chết. */
+  onSendAudio?: (record: GatedInstance, data: Uint8Array) => void;
+}
+
+export function makeGatedSessionFactory(options: GatedFactoryOptions = {}) {
   const instances: GatedInstance[] = [];
 
   const factory: SonioxSessionFactory = (_config, apiKey) => {
@@ -34,9 +41,12 @@ export function makeGatedSessionFactory() {
         await gate;
       },
       sendAudio(data) {
+        options.onSendAudio?.(record, data as Uint8Array);
         record.sentChunks.push(data as Uint8Array);
       },
-      async finish() {},
+      async finish() {
+        await options.finish?.(record);
+      },
       close() {
         record.closed = true;
         // Mô phỏng worst-case: SDK thật CÓ THỂ tự bắn "disconnected" ngay cả khi đóng chủ

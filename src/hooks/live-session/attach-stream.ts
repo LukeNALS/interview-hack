@@ -3,7 +3,7 @@ import { PcmWorkletCapture } from "@/lib/audio/pcm-worklet";
 import type { PairKeys } from "@/lib/soniox/connection";
 import { AlignBuffer, type AlignedUtterance } from "@/lib/transcript/align";
 import type { IngestUtterancePayload } from "@/lib/transcript/ingest-queue";
-import { buildClientUtteranceId, normalizeToSessionAxis, type StreamLabel } from "@/lib/transcript/utterance-builder";
+import { absToSessionAxis, buildClientUtteranceId, type StreamLabel } from "@/lib/transcript/utterance-builder";
 import { useSessionStore } from "@/stores/session-store";
 import type { Speaker } from "@/types/events";
 import { closeAllStreamsOnce, type LivePipeline, type StreamRuntime } from "../live-pipeline";
@@ -30,15 +30,9 @@ export function createStreamAttacher(
 
   const handleAligned = (label: StreamLabel) => (aligned: AlignedUtterance) => {
     if (pipeline.disposed) return;
-    const runtime = findRuntime(label);
-    const epochConnMs = runtime?.controller.getEpochConnMs() ?? null;
-    if (epochConnMs === null) return;
-    const { t_start_ms, t_end_ms } = normalizeToSessionAxis({
-      tSonioxStartMs: aligned.t_start_ms,
-      tSonioxEndMs: aligned.t_end_ms,
-      epochConnMs,
-      t0LocalMs: t0Local,
-    });
+    // `aligned.t_*` đã là mốc TUYỆT ĐỐI trên đồng hồ capture (controller cộng epoch của đúng connection phát) ⇒
+    // trục session = abs − t0, không còn phụ thuộc connection "hiện tại" lúc emit.
+    const { t_start_ms, t_end_ms } = absToSessionAxis(aligned.t_start_ms, aligned.t_end_ms, t0Local);
     const clientUttId = buildClientUtteranceId(label, t_start_ms);
     const localId = clientUttIdToLocalIdRef.current.get(clientUttId) ?? tempIdCounterRef.current--;
     clientUttIdToLocalIdRef.current.set(clientUttId, localId);
@@ -89,7 +83,7 @@ export function createStreamAttacher(
       // Dừng cả controller, không chỉ mic: `stopped` chặn mọi reconnect/xin key về sau của luồng này và đóng
       // connection còn sống của cặp hiện tại (lỗi thường chỉ rơi vào 1 trong 2) — không thì nó vẫn tính
       // stream-giây dù mic đã tắt. `stop()` idempotent nên gọi sau `onFatal` (đã tự đóng) cũng an toàn.
-      void controller.stop().catch(() => {});
+      void controller.stop({ flushPending: true }).catch(() => {});
       console.error("[soniox] reconnect bỏ cuộc", { label, code: (err as { code?: string } | null)?.code });
       const message = giveUpToastMessage(label, err);
       if (message) useSessionStore.getState().showToast(message);
@@ -104,18 +98,18 @@ export function createStreamAttacher(
           // TẠM (2026-08-25, gỡ sau khi chốt): direct mode 10/10 lượt ra interviewer — cần nhãn THÔ Soniox.
           if (!fixedRole) console.debug("[diarization]", { raw: seg.speaker ?? null, mapped: speaker, text: seg.textOrig.slice(0, 30) });
           runtime?.alignBuffer.addCanonicalFinal({
-            client_utt_id: `${label}-raw:${seg.startMs}`,
+            client_utt_id: `${label}-raw:${seg.startAbsMs}`,
             speaker,
             lang: seg.language,
             text_orig: seg.textOrig,
             translations: { vi: seg.translationVi, ja: seg.translationJa },
-            t_start_ms: seg.startMs,
-            t_end_ms: seg.endMs,
+            t_start_ms: seg.startAbsMs,
+            t_end_ms: seg.endAbsMs,
           });
         },
         onEnFinal: (seg: EnSegment) => {
           const runtime = findRuntime(label);
-          runtime?.alignBuffer.addEnFinal({ text_en: seg.textEn ?? "", t_start_ms: seg.startMs, t_end_ms: seg.endMs });
+          runtime?.alignBuffer.addEnFinal({ text_en: seg.textEn ?? "", t_start_ms: seg.startAbsMs, t_end_ms: seg.endAbsMs });
         },
         onPartial: (text) => {
           const partialId = label === "tab" ? -2 : -1;

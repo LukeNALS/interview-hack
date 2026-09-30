@@ -35,6 +35,12 @@ export function normalizeToSessionAxis(input: NormalizeTimestampInput): Normaliz
   };
 }
 
+/** Mốc TUYỆT ĐỐI trên đồng hồ capture (`Date.now()` lúc chunk được bơm) -> trục session: t_session = abs − t0_local.
+ *  Dùng khi controller đã cộng epoch của đúng connection phát (segment mang `startAbsMs/endAbsMs`). */
+export function absToSessionAxis(absStartMs: number, absEndMs: number, t0LocalMs: number): NormalizedTimestamp {
+  return { t_start_ms: absStartMs - t0LocalMs, t_end_ms: absEndMs - t0LocalMs };
+}
+
 /**
  * client_utt_id = `${stream}:${t_start_session_ms}` — uses the SESSION-axis start (not
  * the raw Soniox-local start_ms, which resets to ~0 after every reconnect/renew) so ids

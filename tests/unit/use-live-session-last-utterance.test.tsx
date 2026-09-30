@@ -23,8 +23,8 @@ interface CanonicalSegmentInput {
   textOrig: string;
   language: string | null;
   speaker: string | null;
-  startMs: number;
-  endMs: number;
+  startAbsMs: number;
+  endAbsMs: number;
   translationVi: string | null;
   translationJa: string | null;
 }
@@ -35,6 +35,8 @@ const hoisted = vi.hoisted(() => {
       // Mảng vì mode "online" dựng HAI stream (mic + tab) -> hai AlignBuffer độc lập.
       handlersList: [] as Array<{ onCanonicalFinal: (seg: CanonicalSegmentInput) => void }>,
       mode: "direct" as "direct" | "online",
+      /** Mô phỏng `finish()` xả token cuối về handler trong lúc drain khi kết thúc buổi (audit #7). */
+      onDrain: null as null | (() => void | Promise<void>),
     },
   };
 });
@@ -50,11 +52,11 @@ vi.mock("@/hooks/use-soniox", () => ({
     }
     async open() {}
     async stop() {}
+    async drainAndStop() {
+      await hoisted.spy.onDrain?.();
+    }
     async reconnect() {}
     feed() {}
-    getEpochConnMs() {
-      return 0;
-    }
   },
 }));
 
@@ -133,6 +135,7 @@ async function flushAsync(): Promise<void> {
 beforeEach(() => {
   hoisted.spy.handlersList = [];
   hoisted.spy.mode = "direct";
+  hoisted.spy.onDrain = null;
   posted.length = 0;
   useSessionStore.getState().patch({ toast: "" });
   vi.stubGlobal(
@@ -183,8 +186,8 @@ test("test_live_session_end_while_last_utterance_waits_for_en_still_posts_it_to_
       textOrig: "câu cuối của buổi phỏng vấn",
       language: "vi",
       speaker: "Speaker 1",
-      startMs: 1000,
-      endMs: 2000,
+      startAbsMs: 1000,
+      endAbsMs: 2000,
       translationVi: null,
       translationJa: "最後の一言",
     });
@@ -220,8 +223,8 @@ test("test_live_session_canonical_final_arriving_after_dispose_is_still_dropped_
       textOrig: "utterance ma sau khi pipeline chết",
       language: "vi",
       speaker: "Speaker 1",
-      startMs: 9000,
-      endMs: 9500,
+      startAbsMs: 9000,
+      endAbsMs: 9500,
       translationVi: null,
       translationJa: null,
     });
@@ -252,8 +255,8 @@ test("test_live_session_unmount_without_pressing_end_still_posts_last_pending_ut
       textOrig: "câu cuối trước khi bấm back",
       language: "vi",
       speaker: "Speaker 1",
-      startMs: 3000,
-      endMs: 4000,
+      startAbsMs: 3000,
+      endAbsMs: 4000,
       translationVi: null,
       translationJa: "戻る前の最後の一言",
     });
@@ -289,8 +292,8 @@ test("test_live_session_online_mode_end_flushes_both_align_buffers_without_dupli
       textOrig: "câu cuối phía người phỏng vấn",
       language: "vi",
       speaker: "Speaker 1",
-      startMs: 5000,
-      endMs: 6000,
+      startAbsMs: 5000,
+      endAbsMs: 6000,
       translationVi: null,
       translationJa: null,
     });
@@ -298,8 +301,8 @@ test("test_live_session_online_mode_end_flushes_both_align_buffers_without_dupli
       textOrig: "câu cuối phía ứng viên",
       language: "vi",
       speaker: "Speaker 2",
-      startMs: 5200,
-      endMs: 6200,
+      startAbsMs: 5200,
+      endAbsMs: 6200,
       translationVi: null,
       translationJa: null,
     });
@@ -318,4 +321,33 @@ test("test_live_session_online_mode_end_flushes_both_align_buffers_without_dupli
   expect(posted.map((u) => u.text_orig).sort()).toEqual(
     ["câu cuối phía người phỏng vấn", "câu cuối phía ứng viên"].sort(),
   );
+});
+
+test("test_live_session_end_final_tokens_returned_during_finish_are_ingested", async () => {
+  // Arrange — probe audit #7: Soniox chỉ xả câu đang nói khi `finish()` được gọi lúc kết thúc buổi. Trước sửa,
+  // pipeline bị dispose trước nên final về trong `finish()` gặp `handleAligned` đã chặn và queue đã chết (enqueue = 0).
+  const wrapper = ({ children }: { children: ReactNode }) => <>{children}</>;
+  const view = renderHook(() => useLiveSession("sess-drain-1"), { wrapper });
+  await flushAsync();
+  const handlers = hoisted.spy.handlersList[0];
+  hoisted.spy.onDrain = () => {
+    handlers.onCanonicalFinal({
+      textOrig: "câu đang nói dở được xả khi finish",
+      language: "vi",
+      speaker: "Speaker 1",
+      startAbsMs: 3000,
+      endAbsMs: 4500,
+      translationVi: null,
+      translationJa: "finish で吐き出された一言",
+    });
+  };
+
+  // Act — user bấm "Kết thúc"
+  await act(async () => {
+    await view.result.current.endInterview();
+  });
+  await flushAsync();
+
+  // Assert — câu xả trong lúc drain tới được server
+  expect(posted.map((u) => u.text_orig)).toEqual(["câu đang nói dở được xả khi finish"]);
 });

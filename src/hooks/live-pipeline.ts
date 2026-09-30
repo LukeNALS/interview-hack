@@ -50,6 +50,26 @@ export function closeAllStreamsOnce(
 }
 
 /**
+ * Kết thúc êm mọi stream của pipeline (audit #7): dừng PCM TRƯỚC (không bơm thêm audio), rồi drain controller —
+ * `finish()` có timeout để câu cuối + bản dịch về kịp align buffer và ingest queue KHI PIPELINE CÒN SỐNG. Gọi TRƯỚC
+ * `disposeLivePipeline` (dispose set `disposed` và chặn `handleAligned`, nên token về sau đó bị mất).
+ * Không ném: lỗi drain của 1 stream không được chặn luồng kết thúc buổi.
+ */
+export async function drainLivePipelineStreams(pipeline: LivePipeline, timeoutMs: number): Promise<void> {
+  const streams = pipeline.streams.current;
+  for (const s of streams) s.pcmCapture.stop();
+  await Promise.all(
+    streams.map(async (s) => {
+      try {
+        await s.controller.drainAndStop(timeoutMs);
+      } catch {
+        // best-effort: stream lỗi/đã chết thì bỏ qua, vẫn phải đi tiếp dispose + /end
+      }
+    }),
+  );
+}
+
+/**
  * BUG #3 fix — pipeline thu âm của MỘT session, sống ở module scope chứ KHÔNG phải
  * ref theo instance `useLiveSession`. Lý do: vào /live bằng điều hướng client-side,
  * `LiveScreen` mount 2 lần (SessionScreenGuard bounce live→prep→live khi cache
