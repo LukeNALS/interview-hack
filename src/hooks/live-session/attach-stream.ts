@@ -86,6 +86,10 @@ export function createStreamAttacher(
     const streak = createReconnectStreakGuard();
     const giveUp = (err: unknown) => {
       pcmCapture?.stop();
+      // Dừng cả controller, không chỉ mic: `stopped` chặn mọi reconnect/xin key về sau của luồng này và đóng
+      // connection còn sống của cặp hiện tại (lỗi thường chỉ rơi vào 1 trong 2) — không thì nó vẫn tính
+      // stream-giây dù mic đã tắt. `stop()` idempotent nên gọi sau `onFatal` (đã tự đóng) cũng an toàn.
+      void controller.stop().catch(() => {});
       console.error("[soniox] reconnect bỏ cuộc", { label, code: (err as { code?: string } | null)?.code });
       const message = giveUpToastMessage(label, err);
       if (message) useSessionStore.getState().showToast(message);

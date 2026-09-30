@@ -293,6 +293,7 @@ test("test_live_session_reconnect_giveup_after_key_fetch_failures_shows_service_
   await flushAsync();
   hoisted.keysError = new ApiError("rate_limit_unavailable");
   const pcmStopsBefore = hoisted.pcmStops;
+  const controllerStopsBefore = hoisted.controllerStops;
 
   // Act — rớt kết nối ⇒ reconnectWithBackoff 3 lượt (1 s, 2 s backoff) rồi bỏ cuộc
   act(() => handlersOf(0).onDegraded?.());
@@ -304,6 +305,9 @@ test("test_live_session_reconnect_giveup_after_key_fetch_failures_shows_service_
   expect(hoisted.reconnected).toEqual([]);
   expect(hoisted.pcmStops).toBe(pcmStopsBefore + 1);
   expect(useSessionStore.getState().toast).toContain(KEY_SERVICE_UNAVAILABLE_MESSAGE);
+  // Đóng cả controller (connection còn sống của cặp hiện tại), không chỉ tắt mic — đọc TRƯỚC unmount
+  expect(hoisted.controllerStops).toBe(controllerStopsBefore + 1);
+  expect(hoisted.controllers[0].isStopped).toBe(true);
   view.unmount();
 });
 
@@ -438,6 +442,7 @@ test("test_live_session_repeated_quick_degrades_give_up_after_streak_limit_witho
   await flushAsync();
   expect(hoisted.keyCalls).toBe(1);
   const pcmStopsBefore = hoisted.pcmStops;
+  const controllerStopsBefore = hoisted.controllerStops;
 
   // Act + Assert — lần 1: reconnect ngay (chờ 0 s)
   act(() => handlersOf(0).onDegraded?.());
@@ -477,6 +482,46 @@ test("test_live_session_repeated_quick_degrades_give_up_after_streak_limit_witho
   expect(hoisted.keyCalls).toBe(keyCallsBeforeGiveUp);
   expect(hoisted.reconnected).toHaveLength(3);
   expect(hoisted.pcmStops).toBe(pcmStopsBefore + 1);
+  expect(hoisted.controllerStops).toBe(controllerStopsBefore + 1);
+  expect(hoisted.controllers[0].isStopped).toBe(true);
+  view.unmount();
+});
+
+test("test_live_session_degrade_after_give_up_does_not_mint_keys_even_after_streak_window_elapsed", async () => {
+  // Arrange — bỏ cuộc vì thất bại nhanh liên tiếp (cùng kịch bản test trên)
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const view = mountLive("direct");
+  hoisted.captureGate.resolve();
+  await flushAsync();
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+  expect(hoisted.reconnected).toHaveLength(3);
+  expect(hoisted.controllers[0].isStopped).toBe(true);
+  const keyCallsAfterGiveUp = hoisted.keyCalls;
+
+  // Act — lâu hơn cửa sổ "thất bại nhanh" (10 s) rồi lại có tín hiệu degrade muộn: bộ đếm streak reset về lần 1
+  // ⇒ nếu controller chưa dừng (giveUp không gọi stop()), `shouldContinue` cho qua và mint key cho luồng đã bỏ cuộc
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(15_000);
+  });
+  act(() => handlersOf(0).onDegraded?.());
+  await flushAsync();
+
+  // Assert — không xin key, không reconnect thêm
+  expect(hoisted.keyCalls).toBe(keyCallsAfterGiveUp);
+  expect(hoisted.reconnected).toHaveLength(3);
   view.unmount();
 });
 
