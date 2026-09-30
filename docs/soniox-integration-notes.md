@@ -29,9 +29,11 @@ PoC Soniox nội bộ (không kèm trong repo này).
   (TTL chỉ 60 s).
 - TTL chỉ chặn MỞ stream mới; stream đang chạy sống tiếp qua expiry (E3). Nên KHÔNG còn renew định kỳ:
   stream chạy trên key đã dùng lúc mở, tới `max_session_duration`. Renew cũ đã gỡ vì hết lý do tồn tại và là
-  nơi mất câu (E6). ⚠️ Giới hạn bằng chứng: E3 chỉ đo stream sống thêm ~40 s sau expiry (TTL 20 s, 461 final);
-  CHƯA có soak dài (buổi 90 phút = 90× TTL 60 s) — nếu Soniox cắt stream định kỳ thì mỗi lần là 1 reconnect
-  (mất câu chưa finalize + 1 lượt tính vào 60/giờ). Nên soak ≥ 10 phút trước khi deploy prod (runbook).
+  nơi mất câu (E6). ⚠️ Giới hạn bằng chứng: E3 đo stream sống thêm ~40 s sau expiry (TTL 20 s, 461 final); E8S
+  (2026-09-29) đo 1 stream 210 s (key TTL 5 s, `max_session_duration` 300): không lỗi, mọi bucket 30 s đều có
+  final. Phạm vi chỉ 210 s trên 1 stream (TTL 60 s, cặp 2 connection); CHƯA đo soak ≥ 10 phút hay buổi 90
+  phút — nếu Soniox cắt stream định kỳ thì mỗi lần là 1 reconnect (mất câu chưa finalize + 1 lượt tính vào
+  60/giờ). Log `[soniox] stream error` / `reconnect bỏ cuộc` là log trình duyệt, không phải log server.
 - `max_session_duration_seconds` tính PER STREAM từ lúc connect (đồng hồ chạy từ kết nối, không từ lúc
   có audio). Hết ⇒ server cắt cứng bằng event `error` 403 với `raw.error_type =
   "temp_api_key_session_expired"`, KHÔNG flush câu đang nói dở (E4/E5). Đặt bằng thời gian còn lại của
