@@ -57,6 +57,32 @@ PoC Soniox nội bộ (không kèm trong repo này).
 - Route fail-CLOSED khi rate limit (60 request/giờ/phiên) không kiểm được (lỗi quyền lẫn lỗi hạ tầng):
   503 `rate_limit_unavailable`, không gọi Soniox. Client báo lỗi rõ và reconnect tối đa 3 lượt (chờ 1 s rồi 2 s giữa các lượt; không chờ sau lượt cuối) — cửa sổ ~3 s + thời gian request, nên RPC chớp lâu hơn thế giữa buổi thì luồng đó dừng thu tới khi tải lại trang.
 
+## Thế hệ connection, drain khi kết thúc, replay khi reconnect (plan B — audit #6/#7, 2026-09-30)
+- **Thế hệ (`ConnectionGeneration`)**: mỗi lần start/reconnect dựng 1 thế hệ = cặp canonical + en cùng 2 accumulator RIÊNG
+  (`connection-generation.ts`). Event của thế hệ đã bị swap ra bị BỎ (handler kiểm `gen === this.current`), pair cũ đóng
+  NGAY (không còn overlap 1 s). Trước đây 1 cặp accumulator sống qua mọi swap nên token cũ đến muộn dính vào câu mới.
+- **Mốc thời gian segment = đồng hồ capture tuyệt đối** (`epoch_conn + start_ms/end_ms` của token; `epoch_conn` = captureTs
+  chunk đầu được gửi cho connection đó). Controller phát `startAbsMs/endAbsMs`; trục phiên = `abs − t0Local`
+  (`absToSessionAxis`). Nhờ đó reconnect không làm trục thời gian của câu mới lệch đi.
+- **Kết thúc êm (drain)**: bấm Kết thúc ⇒ dừng mọi PCM → `finish()` từng connection song song, tối đa `END_DRAIN_TIMEOUT_MS`
+  = 2 s (`Connection.drain()` không ném, không treo) → chốt phần final còn tích luỹ (cả khi hết timeout) → `disposeLivePipeline`
+  → flush queue → `POST /end`. Thứ tự **drain → dispose → flush** bắt buộc (xem `security-notes.md` §7). `stop()` vẫn là
+  đường đóng NGAY cho unmount/lỗi; `stop({ flushPending: true })` chỉ dùng khi reconnect bỏ cuộc.
+- **Replay từ mốc cuối đã emit**: `ReconnectBuffer` LUÔN ghi (RAM, 120 s; xoá khi stop/fatal). Reconnect replay từ
+  `min(mốc cuối canonical, en) − 300 ms` (`replay-window.ts`). Trần look-back 30 s tính từ LÚC RỚT (captureTs chunk cuối đã
+  gửi cho pair cũ), KHÔNG từ lúc nối lại: audio thu sau lúc rớt (outage dài) chưa từng được phiên âm nên luôn replay hết.
+  Mốc cách lúc rớt > 30 s hoặc buffer không phủ tới mốc ⇒ chốt final của pair cũ trước (câu có thể bị tách đôi, phần đã nói
+  không mất) rồi kẹp lại. Replay ném lỗi ⇒ pair mới bị đóng, pair cũ giữ nguyên, backoff thử lại.
+- **Cổng token thế hệ mới** (chặn phát lần hai phần đã emit): token gốc so ĐIỂM GIỮA với mốc đã emit của loại đó (hai phiên
+  Soniox độc lập gán mốc cho cùng từ lệch nhau vài chục ms; so mốc kết thúc thì lọt đuôi từ thành mảnh lặp; điểm giữa chịu
+  lệch tới nửa độ dài token). Token dịch không có `start_ms/end_ms` nên đi theo trạng thái: bỏ tới khi token gốc đầu tiên của
+  loại đó vượt cổng.
+- ⚠️ Chưa đo: độ lệch mốc thật giữa hai phiên (cần E8 có phí ~$0,035), thời gian xử lý burst replay dài (tối đa 120 s audio),
+  soak ≥ 10 phút. Giới hạn đã biết, không đổi ở plan này: `PcmWorkletCapture.stop()` bỏ phần chưa đủ chunk (≤ 100 ms cuối);
+  `stop()`/nhánh `stopped` của `reconnect()` vẫn `await finish()` không timeout trước khi `close()`.
+- **Direct mode gộp câu (P04)**: số đo offline E6/E7 cho thấy đoạn bị gộp có cùng `spk` nên tách theo người nói không giúp;
+  không đổi code, chưa có mẫu giọng thật — xem `plans/20260929-1830-soniox-connection-handoff-drain/reports/direct-endpoint-findings-260930.md`.
+
 ## Endpoint detection (`<end>` token) — bắt buộc
 Phải bật `enable_endpoint_detection: true` và dùng token `<end>` do Soniox
 emit làm boundary cắt utterance chính thức. KHÔNG dùng heuristic tự chế
