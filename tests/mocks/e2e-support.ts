@@ -7,7 +7,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  */
 
 /** Kịch bản mock Soniox — server đọc từ `api_key` của config frame (soniox-ws-server.ts). */
-export type SonioxScenario = "basic" | "drop";
+export type SonioxScenario = "basic" | "drop" | "drop-mid";
 
 /**
  * Chặn route cấp key Soniox và nhét kịch bản + runId vào chính chuỗi key.
@@ -127,13 +127,14 @@ export interface DbUtterance {
   lang: string | null;
   speaker: string;
   translations: { vi?: string | null; ja?: string | null; en?: string | null } | null;
+  t_start_ms: number | null;
 }
 
 /** Đọc transcript đã ghi của 1 buổi, sắp theo `seq` tăng dần. */
 export async function readUtterances(admin: SupabaseClient, sessionId: string): Promise<DbUtterance[]> {
   const { data, error } = await admin
     .from("utterances")
-    .select("seq, text_orig, lang, speaker, translations")
+    .select("seq, text_orig, lang, speaker, translations, t_start_ms")
     .eq("session_id", sessionId)
     .order("seq", { ascending: true });
   if (error) throw new Error(`Đọc utterances thất bại: ${error.message}`);

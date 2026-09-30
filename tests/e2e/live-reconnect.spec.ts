@@ -25,6 +25,7 @@ import { FIXTURE_TURNS } from "../mocks/soniox-fixtures";
  */
 
 const TURNS_BEFORE_DROP = 3;
+const TURN_INDEX_INTERRUPTED = TURNS_BEFORE_DROP;
 
 let admin: SupabaseClient;
 let sessionId: string;
@@ -120,3 +121,40 @@ test("test_live_soniox_ws_drop_midsession_shows_degraded_then_restored_with_unbr
   await expect(page.locator('section[data-pv="1"] [id^="utt-"]').first()).toBeVisible();
   await expect(page.locator('section[data-pv="0"] [id^="utt-"]').first()).toBeVisible();
 });
+
+test("test_live_soniox_ws_drop_mid_sentence_replays_the_interrupted_sentence_exactly_once", async ({ page }) => {
+  // Arrange — `drop-mid`: lượt 4 chỉ có partial rồi socket bị cắt; connection mới phiên âm lại đuôi lượt 3 (phần đã emit)
+  // + trọn lượt 4 + các lượt sau. Bản dịch của đuôi lượt 3 không có mốc thời gian (như Soniox thật).
+  await stubSonioxKeyWithScenario(page, "drop-mid");
+  await recordBannerTransitions(page);
+  const mid = await seedLiveSession("reconnect-mid");
+  await loginAs(page, mid.email);
+
+  // Act
+  await page.goto(`/sessions/${mid.sessionId}/live`);
+  await expect
+    .poll(() => readBannerTransitions(page), { timeout: 30_000, message: "chờ banner đi qua degraded rồi restored" })
+    .toEqual(["degraded", "restored"]);
+  const utterances = await waitForUtteranceCount(admin, mid.sessionId, FIXTURE_TURNS.length);
+
+  // Assert — đúng 10 lượt, mỗi câu đúng 1 lần và TRỌN VẸN (không mảnh đuôi của lượt 3, không câu lặp), bản dịch không bị
+  // dính bản dịch của phần đã emit
+  expect(utterances).toHaveLength(FIXTURE_TURNS.length);
+  utterances.forEach((u, i) => {
+    expect(u.text_orig).toBe(FIXTURE_TURNS[i].orig);
+    expect(u.translations?.en).toBe(FIXTURE_TURNS[i].en);
+  });
+  assertSeqUnbroken(utterances);
+  expect(utterances.filter((u) => u.text_orig.includes(FIXTURE_TURNS[TURN_INDEX_INTERRUPTED].orig))).toHaveLength(1);
+  // mốc thời gian tăng dần qua chỗ rớt (probe #6)
+  const starts = utterances.map((u) => u.t_start_ms ?? -1);
+  expect(starts).toEqual([...starts].sort((a, b) => a - b));
+  expect(new Set(starts).size).toBe(starts.length);
+});
+
+/** Buổi live riêng cho ca `drop-mid` (mỗi ca một user + buổi: không đọc lẫn transcript của ca kia). */
+async function seedLiveSession(label: string): Promise<{ email: string; sessionId: string }> {
+  const user = await seedUser(admin, label);
+  createdUsers.push(user.userId);
+  return { email: user.email, sessionId: await seedSession(admin, { userId: user.userId, status: "live", mode: "direct" }) };
+}
