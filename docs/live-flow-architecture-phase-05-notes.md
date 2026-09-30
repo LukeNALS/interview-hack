@@ -93,7 +93,7 @@ lượt reconnect. Không còn renew định kỳ (xem `soniox-integration-notes
   nếu true, `closeAll` cặp mới rồi return ngay, KHÔNG swap/KHÔNG `onRestored()`. Guard này fix leak race NEW-1 (round 2): nếu
   `stop()` xảy ra đúng lúc `reconnect()` đang `await`, pair mới không còn ai giữ reference để đóng — leak WebSocket, đốt quota
   10 concurrent/project. Xem `use-soniox.ts` (`reconnect()`) cho code thật + comment tại chỗ.
-- Sau khi pair mới ready: `replayInto(next)` (replay buffer RAM từ mốc cuối đã emit − 300 ms, đặt cổng token; bọc try/catch —
+- Sau khi pair mới ready: `replayInto(next)` (replay buffer RAM từ mốc cuối đã emit − 300 ms, đặt cổng token; epoch connection mới = mốc audio của chunk replay đầu; bọc try/catch —
   ném thì đóng pair mới, giữ pair cũ) → `swapGeneration(next)` (pair cũ đóng NGAY, event của nó bị bỏ) → `degraded = false` →
   `onRestored`. Buffer luôn ghi và KHÔNG bị xoá khi replay; `feed()` trong lúc await vẫn vào buffer nên audio tới muộn nằm
   trong replay. Chi tiết (trần 30 s từ lúc rớt, cổng điểm giữa, token dịch theo trạng thái): `soniox-integration-notes.md`.

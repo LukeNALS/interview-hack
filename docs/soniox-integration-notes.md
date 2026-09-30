@@ -61,9 +61,11 @@ PoC Soniox nội bộ (không kèm trong repo này).
 - **Thế hệ (`ConnectionGeneration`)**: mỗi lần start/reconnect dựng 1 thế hệ = cặp canonical + en cùng 2 accumulator RIÊNG
   (`connection-generation.ts`). Event của thế hệ đã bị swap ra bị BỎ (handler kiểm `gen === this.current`), pair cũ đóng
   NGAY (không còn overlap 1 s). Trước đây 1 cặp accumulator sống qua mọi swap nên token cũ đến muộn dính vào câu mới.
-- **Mốc thời gian segment = đồng hồ capture tuyệt đối** (`epoch_conn + start_ms/end_ms` của token; `epoch_conn` = captureTs
-  chunk đầu được gửi cho connection đó). Controller phát `startAbsMs/endAbsMs`; trục phiên = `abs − t0Local`
-  (`absToSessionAxis`). Nhờ đó reconnect không làm trục thời gian của câu mới lệch đi.
+- **Mốc thời gian segment = đồng hồ audio tuyệt đối** (`epoch_conn + start_ms/end_ms` của token; `epoch_conn` = mốc audio của
+  chunk đầu được gửi cho connection đó). Mốc audio của chunk = `captureTs` chunk ĐẦU + tổng độ dài audio đã nhận (byte / 32 ở
+  PCM16 mono 16 kHz), KHÔNG phải `captureTs` từng chunk: `captureTs` là lúc chunk tới main thread nên lệch thất thường tới
+  ~200 ms, làm epoch của connection đầu buổi và connection replay lệch nhau ⇒ cổng token lọt đuôi câu trước. Controller phát
+  `startAbsMs/endAbsMs`; trục phiên = `abs − t0Local` (`absToSessionAxis`).
 - **Kết thúc êm (drain)**: bấm Kết thúc ⇒ dừng mọi PCM → `finish()` từng connection song song, tối đa `END_DRAIN_TIMEOUT_MS`
   = 2 s (`Connection.drain()` không ném, không treo) → chốt phần final còn tích luỹ (cả khi hết timeout) → `disposeLivePipeline`
   → flush queue → `POST /end`. Thứ tự **drain → dispose → flush** bắt buộc (xem `security-notes.md` §7). `stop()` vẫn là
@@ -74,9 +76,12 @@ PoC Soniox nội bộ (không kèm trong repo này).
   Mốc cách lúc rớt > 30 s hoặc buffer không phủ tới mốc ⇒ chốt final của pair cũ trước (câu có thể bị tách đôi, phần đã nói
   không mất) rồi kẹp lại. Replay ném lỗi ⇒ pair mới bị đóng, pair cũ giữ nguyên, backoff thử lại.
 - **Cổng token thế hệ mới** (chặn phát lần hai phần đã emit): token gốc so ĐIỂM GIỮA với mốc đã emit của loại đó (hai phiên
-  Soniox độc lập gán mốc cho cùng từ lệch nhau vài chục ms; so mốc kết thúc thì lọt đuôi từ thành mảnh lặp; điểm giữa chịu
-  lệch tới nửa độ dài token). Token dịch không có `start_ms/end_ms` nên đi theo trạng thái: bỏ tới khi token gốc đầu tiên của
-  loại đó vượt cổng.
+  Soniox độc lập gán mốc cho cùng từ lệch nhau; so mốc kết thúc thì lọt đuôi từ thành mảnh lặp; điểm giữa chịu lệch tới nửa
+  độ dài token). Lớp thứ hai: token FINAL sát sau cổng (≤ 400 ms) mà chữ của nó cộng với chữ các token đã bỏ ở cổng đúng là
+  phần CUỐI của câu đã emit thì vẫn coi là đuôi đã emit (đo trên prod 2026-09-30: đuôi "す。" lệch +198 ms, " phút." lệch +81 ms, token
+  dài 60–180 ms nên điểm giữa không đủ); chữ khác ⇒ lời mới, qua. Chỉ xét khi chưa có token gốc final nào vượt cổng; token
+  provisional (Soniox gửi lại liên tục) chỉ bị kiểm mốc, không đổi trạng thái cổng. Token dịch không có `start_ms/end_ms` nên
+  đi theo trạng thái: bỏ tới khi token gốc final đầu tiên của loại đó vượt cổng.
 - ⚠️ Chưa đo: độ lệch mốc thật giữa hai phiên (cần E8 có phí ~$0,035), thời gian xử lý burst replay dài (tối đa 120 s audio),
   soak ≥ 10 phút. Giới hạn đã biết, không đổi ở plan này: `PcmWorkletCapture.stop()` bỏ phần chưa đủ chunk (≤ 100 ms cuối);
   `stop()`/nhánh `stopped` của `reconnect()` vẫn `await finish()` không timeout trước khi `close()`.
