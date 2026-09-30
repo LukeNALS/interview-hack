@@ -43,9 +43,11 @@ cap-countdown,connection-banner}.ts`, hoặc route `start`/`soniox-key`/`utteran
   type ở P05, không còn unresolved).
 - `POST /api/sessions/:id/start` — 200 `{started_at, cap_seconds}`. 409
   `invalid_session_status`/`no_free_sessions`/`session_already_started`.
-- `POST /api/sessions/:id/soniox-key` (`requireEmailConfirmed`) — 200 `{keys:[key],
-  expires_at}` **LUÔN 1 phần tử** dù là mảng — caller PHẢI `keys[0]`. 403 `cap_reached`
-  (elapsed≥cap_seconds), 429 (60/giờ/session), 502 `soniox_key_failed`.
+- `POST /api/sessions/:id/soniox-key` (`requireEmailConfirmed`) — 200 `{keys:[canonical, en],
+  expires_at}` **LUÔN 2 key single-use KHÁC nhau** (TTL 60 s, mỗi key mở đúng 1 stream): `keys[0]` cho
+  connection canonical, `keys[1]` cho en, KHÔNG dùng lại key; mỗi start/reconnect xin cặp MỚI. 403
+  `cap_reached` (elapsed≥cap_seconds), 429 (60/giờ/session), 502 `soniox_key_failed`, 503
+  `rate_limit_unavailable` (rate limit không kiểm được ⇒ fail-closed, không gọi Soniox).
 - `POST /api/sessions/:id/utterances` (batch 1-5, ≤8KB/item) — 200
   `{results:[{client_utt_id,seq}]}`. Idempotent theo `(session_id, client_utt_id)`: trùng →
   **overwrite toàn bộ** `translations`/`en_pending` (KHÔNG deep-merge, client phải gửi lại
