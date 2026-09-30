@@ -19,7 +19,7 @@ export interface ReplayWindowInput {
   lastEmittedEndAbsMs: { canonical: number; en: number };
   /** captureTs chunk cũ nhất còn trong buffer; null nếu buffer rỗng. */
   bufferOldestTs: number | null;
-  /** captureTs chunk cuối đã gửi cho pair cũ (lúc rớt); -Infinity nếu chưa gửi chunk nào. */
+  /** Mốc audio chunk cuối đã gửi cho pair cũ (lúc rớt); -Infinity nếu chưa gửi chunk nào. */
   dropTs: number;
 }
 

@@ -2,7 +2,7 @@
 
 import type { RealtimeToken } from "@soniox/client";
 import { classifySonioxRealtimeError, type FatalKind } from "@/lib/soniox/classify-realtime-error";
-import { buildSonioxConfigs, type SonioxCaptureMode } from "@/lib/soniox/config";
+import { buildSonioxConfigs, SONIOX_SAMPLE_RATE_HZ, type SonioxCaptureMode } from "@/lib/soniox/config";
 import { accOf, connOf, type ConnKind, type ConnectionGeneration } from "@/lib/soniox/connection-generation";
 import { SonioxConnection, type PairKeys, type SonioxSessionFactory } from "@/lib/soniox/connection";
 import { closeAll, fanOutChunk, openAllReady } from "@/lib/soniox/fanout";
@@ -25,6 +25,11 @@ import { TokenSegmentAccumulator, type FlushedSegment } from "@/lib/soniox/token
  * thời gian segment là mốc tuyệt đối trên đồng hồ capture (`epoch_conn` của chính connection phát ra + ms
  * tương đối của token), nên segment của thế hệ cũ và mới không ghép chéo và không lệch trục.
  */
+
+/** PCM16 mono: byte trên mỗi ms audio — đổi độ dài chunk ra thời gian audio. */
+const PCM_BYTES_PER_MS = (SONIOX_SAMPLE_RATE_HZ * 2) / 1000;
+/** Token lệch mốc vượt dung sai điểm giữa vẫn bị coi là đuôi câu đã emit nếu bắt đầu trong khoảng này sau cổng VÀ khớp chữ cuối câu. */
+const GATE_TAIL_SLACK_MS = 400;
 
 export interface CanonicalSegment {
   textOrig: string;
@@ -75,6 +80,12 @@ export class SonioxStreamController {
   };
   /** captureTs chunk cuối đã fan-out cho pair hiện tại — mốc "lúc rớt" để tính trần look-back của replay. */
   private lastFanOutTs = Number.NEGATIVE_INFINITY;
+  /** Đồng hồ audio: mốc chunk = captureTs chunk ĐẦU + tổng độ dài audio đã nhận. Dùng thay captureTs từng chunk (tới main thread
+   *  lệch tới ~200 ms) để epoch của mọi connection — đầu buổi lẫn replay — nằm trên CÙNG một trục, không lệch nhau. */
+  private audioOriginTs: number | null = null;
+  private audioElapsedMs = 0;
+  /** Chữ gốc của segment cuối đã emit theo loại — so với token bị phiên âm lại sau cổng. */
+  private readonly lastEmittedText: Record<ConnKind, string> = { canonical: "", en: "" };
   private degraded = false;
   /** true khi đóng chủ động (stop()) HOẶC sau lỗi không thử lại được (reportFatal) — chặn onDisconnected
    *  trigger reconnect (C1 fix) và làm `onFatal` chỉ bắn 1 lần dù cả 2 connection cùng lỗi. */
@@ -100,6 +111,7 @@ export class SonioxStreamController {
       enAcc: new TokenSegmentAccumulator(),
       gate: { canonical: Number.NEGATIVE_INFINITY, en: Number.NEGATIVE_INFINITY },
       gateOpen: { canonical: false, en: false },
+      tailProbe: { canonical: "", en: "" },
     } as ConnectionGeneration;
     gen.canonical = this.createConnection("canonical", gen);
     gen.en = this.createConnection("en", gen);
@@ -146,9 +158,17 @@ export class SonioxStreamController {
   feed(chunk: ArrayBuffer, captureTs: number): void {
     if (this.stopped) return; // đã đóng (kể cả lỗi fatal): không còn connection để gửi, không giữ audio vô ích
     const data = new Uint8Array(chunk);
-    this.reconnectBuffer.push(data, captureTs);
+    // `captureTs` chỉ dùng làm gốc của chunk đầu; mọi mốc sau tính theo độ dài audio (xem `audioOriginTs`).
+    this.audioOriginTs ??= captureTs;
+    const audioTs = this.audioOriginTs + this.audioElapsedMs;
+    this.audioElapsedMs += data.byteLength / PCM_BYTES_PER_MS;
+    this.reconnectBuffer.push(data, audioTs);
     if (this.degraded) return;
-    this.lastFanOutTs = captureTs;
+    this.lastFanOutTs = audioTs;
+    // Connection chưa có epoch (chunk đầu của thế hệ này, không có replay) ⇒ neo vào mốc audio, không vào Date.now() lúc feed.
+    for (const conn of [this.current.canonical, this.current.en]) {
+      if (conn.getEpochConnMs() === null) conn.setEpochConnMs(audioTs);
+    }
     fanOutChunk([this.current.canonical, this.current.en], data);
   }
 
@@ -301,16 +321,33 @@ export class SonioxStreamController {
     const gate = gen.gate[kind];
     if (gate === Number.NEGATIVE_INFINITY) return false; // thế hệ đầu, hoặc loại này chưa emit gì: không có gì để chặn
     if (token.translation_status === "translation") return !gen.gateOpen[kind];
+    if (token.text === "<end>") return false; // transport thô (mock/POC): không mang mốc, không phải lời nói
     const startMs = token.start_ms ?? token.end_ms;
     const endMs = token.end_ms ?? token.start_ms;
     const epoch = connOf(gen, kind).getEpochConnMs();
     if (startMs === undefined || endMs === undefined || epoch === null) {
-      gen.gateOpen[kind] = true;
+      if (token.is_final) gen.gateOpen[kind] = true;
       return false;
     }
     const before = epoch + (startMs + endMs) / 2 <= gate;
-    if (!before) gen.gateOpen[kind] = true;
-    return before;
+    // Token provisional được Soniox gửi lại liên tục và chỉ vẽ bubble mờ: chỉ kiểm mốc, không đổi trạng thái cổng/probe.
+    if (!token.is_final) return before;
+    if (before || (!gen.gateOpen[kind] && this.isShiftedEmittedTail(gen, kind, token.text, epoch + startMs, gate))) {
+      gen.tailProbe[kind] += token.text;
+      return true;
+    }
+    gen.gateOpen[kind] = true;
+    return false;
+  }
+
+  /**
+   * Hai phiên Soniox đôi khi lệch mốc của cùng một token vượt dung sai điểm giữa (đo trên prod: +81..+198 ms, token dài 60–180 ms
+   * ⇒ đuôi "す。" / " phút." của câu đã emit lọt thành utterance riêng). Token sát sau cổng chỉ bị coi là đuôi đã emit khi
+   * toàn bộ chữ đã bỏ ở cổng của thế hệ này + chữ token này đúng là phần CUỐI của câu đã emit — chữ khác thì là lời mới.
+   */
+  private isShiftedEmittedTail(gen: ConnectionGeneration, kind: ConnKind, text: string, startAbsMs: number, gate: number): boolean {
+    if (startAbsMs > gate + GATE_TAIL_SLACK_MS) return false;
+    return this.lastEmittedText[kind].endsWith(gen.tailProbe[kind] + text);
   }
 
   private handleToken(gen: ConnectionGeneration, kind: ConnKind, token: RealtimeToken): void {
@@ -356,6 +393,7 @@ export class SonioxStreamController {
     const startAbsMs = epoch + flushed.startMs;
     const endAbsMs = epoch + flushed.endMs;
     this.lastEmitted[kind] = Math.max(this.lastEmitted[kind], endAbsMs);
+    this.lastEmittedText[kind] = flushed.textOrig;
     if (kind === "canonical") {
       const sourceLang = flushed.language;
       this.handlers.onCanonicalFinal?.({

@@ -13,9 +13,14 @@ const STEP = 100;
 const T0 = 1_000_000;
 let now = T0;
 
+/** 1 chunk = 100 ms PCM16 mono 16 kHz (3200 byte) — controller tính đồng hồ audio theo độ dài byte; 2 byte đầu mã hoá ts. */
+const CHUNK_BYTES = 3200;
 const chunkAt = (ts: number): ArrayBuffer => {
   const v = Math.floor(ts / STEP);
-  return new Uint8Array([v % 256, Math.floor(v / 256)]).buffer;
+  const bytes = new Uint8Array(CHUNK_BYTES);
+  bytes[0] = v % 256;
+  bytes[1] = Math.floor(v / 256);
+  return bytes.buffer;
 };
 const tsOf = (bytes: Uint8Array): number => (bytes[0] + bytes[1] * 256) * STEP;
 
@@ -269,6 +274,142 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
 
     // Assert
     expect(s.canonical[0]).toMatchObject({ textOrig: "gốc", translationVi: "dịch tới trước" });
+  });
+
+
+  test("test_soniox_controller_first_generation_epoch_is_anchored_to_the_first_chunk_not_to_the_clock_at_feed_time", async () => {
+    // Arrange — Date.now() lúc feed muộn hơn captureTs của chunk (chunk tới main thread rồi mới được gửi đi)
+    const s = setup();
+    await openImmediately(s.controller, pairKeys("k1"), s.instances);
+    now = T0 + 70;
+
+    // Act
+    s.controller.feed(chunkAt(T0), T0);
+    s.instances[0].handlers["token"]?.(token("đầu tiên", 0, 500));
+    s.instances[0].handlers["endpoint"]?.();
+
+    // Assert — mốc tuyệt đối theo captureTs của chunk đầu, không theo Date.now() lúc feed
+    expect(s.canonical[0]).toMatchObject({ startAbsMs: T0, endAbsMs: T0 + 500 });
+  });
+
+  test("test_soniox_controller_replay_epoch_follows_the_audio_clock_not_capture_ts_jitter", async () => {
+    // Arrange — captureTs từng chunk tới main thread lệch thất thường (−40..+90 ms); chunk đầu đúng giờ. Audio vẫn liền mạch 100 ms/chunk.
+    const s = setup();
+    await openImmediately(s.controller, pairKeys("k1"), s.instances);
+    for (let i = 0; i <= 120; i++) {
+      const jitter = i === 0 ? 0 : i % 2 === 0 ? 90 : -40;
+      now = T0 + i * STEP;
+      s.controller.feed(chunkAt(T0 + i * STEP), T0 + i * STEP + jitter);
+    }
+    s.emitSegments(0, "câu một", 3000, 4000); // mốc đã emit = abs T0 + 4000 (epoch = chunk đầu đúng giờ)
+    s.instances[0].handlers["disconnected"]?.();
+
+    // Act — replay từ (mốc − 300 ms) = chunk thứ 37 (audio T0 + 3700, captureTs của nó lệch +90 ms)
+    await s.reconnect("k2", 2);
+    s.instances[2].handlers["token"]?.(token("câu hai", 400, 900));
+    s.instances[2].handlers["endpoint"]?.();
+
+    // Assert — epoch connection mới = mốc audio của chunk replay đầu tiên (T0 + 3700), KHÔNG lệch theo jitter captureTs
+    expect(s.canonical[1]).toMatchObject({ textOrig: "câu hai", startAbsMs: T0 + 4100, endAbsMs: T0 + 4600 });
+  });
+
+  describe("đuôi câu đã emit bị connection mới phiên âm lại với mốc lệch", () => {
+    /** Câu một kết thúc abs T0 + 4000 bằng chữ "…します。"; connection mới có epoch T0 + 3700 nên mốc token = 3700 + offset. */
+    async function afterReconnectWithEmittedTail() {
+      const s = setup();
+      await openImmediately(s.controller, pairKeys("k1"), s.instances);
+      s.feedRange(T0, T0 + 10_000);
+      s.instances[0].handlers["token"]?.(token("図書館は閉まり", 2500, 3700, { language: "ja" }));
+      s.instances[0].handlers["token"]?.(token("ます。", 3700, 4000, { language: "ja" }));
+      s.instances[0].handlers["endpoint"]?.();
+      s.instances[1].handlers["token"]?.(token("src", 2500, 4000));
+      s.instances[1].handlers["token"]?.(token("en", 2500, 4000, { translation_status: "translation" }));
+      s.instances[1].handlers["endpoint"]?.();
+      s.instances[0].handlers["disconnected"]?.();
+      s.feedRange(T0 + 10_100, T0 + 12_000);
+      await s.reconnect("k2", 2);
+      return s;
+    }
+
+    test("test_soniox_controller_gate_drops_shifted_tail_token_that_matches_the_end_of_the_emitted_sentence", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — cùng chữ "ます。" nhưng connection mới gán mốc lệch +200 ms (abs 4000..4200 tính từ epoch 3700 ⇒ start 300→ lệch ra sau cổng)
+      s.instances[2].handlers["token"]?.(token("ます。", 318, 498, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+      s.instances[2].handlers["token"]?.(token("câu hai", 800, 1300, { language: "vi" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert — mảnh đuôi bị loại, câu mới vẫn qua
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "câu hai"]);
+    });
+
+    test("test_soniox_controller_gate_drops_token_whose_midpoint_is_inside_the_emitted_region_even_when_its_text_differs", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — chữ nhận dạng khác lần trước ("まつ" thay vì "ます。") nhưng điểm giữa (abs 4000) nằm trong vùng đã emit, kết thúc lệch +100 ms
+      s.instances[2].handlers["token"]?.(token("まつ", 200, 400, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+      s.instances[2].handlers["token"]?.(token("câu hai", 800, 1300, { language: "vi" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert — bị loại theo thời gian, không cần khớp chữ
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "câu hai"]);
+    });
+
+    test("test_soniox_controller_gate_keeps_token_within_slack_when_its_text_does_not_match_the_emitted_tail", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — sát sau cổng nhưng là chữ khác (người nói tiếp ngay) ⇒ không phải phần đã emit
+      s.instances[2].handlers["token"]?.(token("はい", 318, 498, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "はい"]);
+    });
+
+    test("test_soniox_controller_gate_stops_matching_text_once_a_real_token_has_passed", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — lời mới ("はい") qua cổng trước; "ます。" đến ngay sau (vẫn trong dung sai) là phần của lời mới, không phải đuôi cũ
+      s.instances[2].handlers["token"]?.(token("はい", 318, 498, { language: "ja" }));
+      s.instances[2].handlers["token"]?.(token("ます。", 520, 700, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "はいます。"]);
+    });
+
+    test("test_soniox_controller_gate_ignores_repeated_provisional_tokens_when_matching_the_emitted_tail", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — Soniox gửi lại đuôi provisional nhiều lần, rồi mới chốt bản final (mốc lệch)
+      const provisional = token("ます。", 318, 498, { language: "ja", is_final: false });
+      s.instances[2].handlers["token"]?.(provisional);
+      s.instances[2].handlers["token"]?.(provisional);
+      s.instances[2].handlers["token"]?.(token("ます。", 318, 498, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert — provisional không cộng dồn vào chữ so khớp: bản final vẫn nhận ra là đuôi đã emit
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。"]);
+    });
+
+    test("test_soniox_controller_gate_keeps_matching_text_that_starts_well_after_the_boundary", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — cùng chữ "ます。" nhưng bắt đầu 1,1 s sau cổng: câu nói mới thật, không phải đuôi bị phiên âm lại
+      s.instances[2].handlers["token"]?.(token("ます。", 1400, 1600, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "ます。"]);
+    });
   });
 
   test("test_soniox_controller_three_consecutive_reconnects_emit_every_segment_once_in_order", async () => {

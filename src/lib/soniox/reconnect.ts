@@ -9,7 +9,8 @@
 
 export interface BufferedChunk {
   data: Uint8Array;
-  /** Date.now() at the moment this chunk was CAPTURED (not when it's replayed). */
+  /** Mốc trên ĐỒNG HỒ AUDIO của chunk (captureTs chunk đầu + độ dài audio đã nhận — xem `SonioxStreamController.feed`), không phải
+   *  Date.now() lúc chunk tới: mốc đó lệch thất thường nên không dùng làm trục thời gian của token. Tên trường giữ nguyên lịch sử. */
   captureTs: number;
 }
 

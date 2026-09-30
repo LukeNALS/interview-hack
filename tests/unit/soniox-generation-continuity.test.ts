@@ -11,8 +11,9 @@ import { makeGatedSessionFactory, openImmediately, pairKeys } from "../helpers/g
  */
 
 const EPOCH_1 = 1_000_000; // đồng hồ capture lúc pair đầu nhận chunk đầu tiên
-const EPOCH_2 = 1_300_000; // capture_ts chunk đầu được replay vào pair mới (fix B13)
-const CHUNK = new Uint8Array([1, 2, 3, 4]).buffer;
+/** Mốc audio chunk đầu được replay vào pair mới: segment cuối của pair 1 kết thúc ở EPOCH_1 + 900 ⇒ replay từ (mốc − 300 ms). */
+const EPOCH_2 = EPOCH_1 + 600;
+const CHUNK = new Uint8Array(3200).buffer; // 100 ms PCM16 mono 16 kHz — controller tính đồng hồ audio theo độ dài byte
 
 function token(text: string, startMs: number, endMs: number, extra: Partial<RealtimeToken> = {}): RealtimeToken {
   return { text, is_final: true, start_ms: startMs, end_ms: endMs, ...extra } as RealtimeToken;
@@ -36,15 +37,15 @@ async function controllerAfterReconnect(beforeDrop?: (instances: ReturnType<type
     },
   });
   await openImmediately(controller, pairKeys("k1"), instances);
-  controller.feed(CHUNK, EPOCH_1); // pair 1 có epoch_conn = EPOCH_1
+  for (let i = 0; i < 30; i++) controller.feed(CHUNK, EPOCH_1 + i * 100); // pair 1 có epoch_conn = EPOCH_1 (chunk đầu)
   beforeDrop?.(instances); // segment của pair 1 được emit TRƯỚC khi rớt
 
   instances[0].handlers["disconnected"]?.(); // rớt ⇒ degraded, audio sau đó vào buffer
-  controller.feed(CHUNK, EPOCH_2);
+  for (let i = 30; i < 40; i++) controller.feed(CHUNK, EPOCH_1 + i * 100);
   const reconnecting = controller.reconnect(pairKeys("k2"));
   instances[2].resolveConnect();
   instances[3].resolveConnect();
-  await reconnecting; // pair 2 có epoch_conn = EPOCH_2 (chunk đầu của buffer)
+  await reconnecting; // pair 2 có epoch_conn = mốc audio của chunk replay đầu tiên (EPOCH_2 khi pair 1 đã emit, EPOCH_1 khi chưa)
   return { controller, instances, canonical, en, partials };
 }
 
