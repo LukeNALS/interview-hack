@@ -34,11 +34,20 @@ interface ParsedKey {
   runId: string;
 }
 
+/** Key dạng `e2e:<scenario>:<runId>[:<nonce>…]` — runId KHÔNG chứa `:`; phần sau là nonce riêng từng key
+ *  single-use nên bộ đếm reconnect vẫn gom theo runId. Key khác định dạng ⇒ `basic` + runId `anon`. */
 function parseApiKey(apiKey: unknown): ParsedKey {
   if (typeof apiKey !== "string") return { scenario: "basic", runId: "anon" };
-  const match = /^e2e:([a-z-]+):(.+)$/.exec(apiKey);
+  const match = /^e2e:([a-z-]+):([^:]+)(?::.+)?$/.exec(apiKey);
   return match ? { scenario: match[1], runId: match[2] } : { scenario: "basic", runId: "anon" };
 }
+
+/** Key single-use như Soniox thật: dùng lại ⇒ `401 Invalid or expired temporary API key` (E1). */
+const usedKeys = new Set<string>();
+/** Số lần từ chối key đã dùng THEO runId — spec đọc qua `/stats?run=<runId>` để chứng minh app KHÔNG tái dùng key
+ *  khi reconnect. Đếm theo runId (không global): spec chạy song song/mock được giữ giữa các lần chạy không được
+ *  đọc nhầm số của nhau. */
+const reusedKeyRejections = new Map<string, number>();
 
 /** Số connection canonical đã mở cho mỗi runId — kịch bản `drop` chỉ cắt lần ĐẦU. */
 const connectionCounts = new Map<string, number>();
@@ -149,6 +158,18 @@ function handleConnection(socket: Duplex): void {
     if (configured) return;
 
     configured = true;
+    if (typeof message.api_key === "string") {
+      if (usedKeys.has(message.api_key)) {
+        const { runId } = parseApiKey(message.api_key);
+        reusedKeyRejections.set(runId, (reusedKeyRejections.get(runId) ?? 0) + 1);
+        sendJson(socket, { error_code: 401, error_message: "Invalid or expired temporary API key" });
+        cleanup();
+        sendClose(socket);
+        socket.end();
+        return;
+      }
+      usedKeys.add(message.api_key);
+    }
     const translation = message.translation as { type?: string } | undefined;
     state.channel = translation?.type === "one_way" ? "en" : "canonical";
 
@@ -170,7 +191,15 @@ const server = createServer((req, res) => {
   }
   if (req.url === "/reset") {
     connectionCounts.clear();
+    usedKeys.clear();
+    reusedKeyRejections.clear();
     res.writeHead(200).end("{}");
+    return;
+  }
+  if (req.url?.startsWith("/stats")) {
+    const run = new URL(req.url, "http://127.0.0.1").searchParams.get("run") ?? "anon";
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ reusedKeyRejections: reusedKeyRejections.get(run) ?? 0 }));
     return;
   }
   res.writeHead(404).end();

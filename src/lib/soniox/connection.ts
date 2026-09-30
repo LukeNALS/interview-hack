@@ -27,6 +27,13 @@ export const SONIOX_WS_URL =
     ? SONIOX_WS_URL_PRODUCTION
     : process.env.NEXT_PUBLIC_SONIOX_WS_URL || SONIOX_WS_URL_PRODUCTION;
 
+/** Cặp key SINGLE-USE cho 1 cặp connection (canonical + en): mỗi key mở đúng 1 stream, dùng lại ⇒ 401
+ *  sau khi connect (E1) — nên mỗi lần open/reconnect phải xin cặp MỚI. */
+export interface PairKeys {
+  canonical: string;
+  en: string;
+}
+
 export interface SonioxSessionHandlers {
   onToken?: (token: RealtimeToken) => void;
   onEndpoint?: () => void;
@@ -70,6 +77,7 @@ export class SonioxConnection {
   private session: SonioxSessionLike | null = null;
   private epochConnMs: number | null = null;
   private handlers: SonioxSessionHandlers = {};
+  private lastError: Error | null = null;
 
   constructor(opts: SonioxConnectionOptions) {
     this.config = opts.config;
@@ -82,6 +90,12 @@ export class SonioxConnection {
     this.handlers = handlers;
   }
 
+  /** Lỗi server đầu tiên nhận được (SDK phát `error` rồi tự dọn session — connection này đã chết). Cho
+   *  controller kiểm pair MỚI chưa được swap: handler bỏ qua lỗi của connection chưa phải hiện tại. */
+  get error(): Error | null {
+    return this.lastError;
+  }
+
   /** Opens the WS session and resolves once connected — caller (fanout.ts) awaits ALL
    *  connections being ready before feeding any audio (§Architecture). */
   async open(apiKey: string): Promise<void> {
@@ -89,7 +103,10 @@ export class SonioxConnection {
     session.on("token", (token: RealtimeToken) => this.handlers.onToken?.(token));
     session.on("endpoint", () => this.handlers.onEndpoint?.());
     session.on("finished", () => this.handlers.onFinished?.());
-    session.on("error", (err: Error) => this.handlers.onError?.(err));
+    session.on("error", (err: Error) => {
+      this.lastError = err;
+      this.handlers.onError?.(err);
+    });
     session.on("disconnected", (reason?: string) => this.handlers.onDisconnected?.(reason));
     session.on("connected", () => this.handlers.onConnected?.());
     this.session = session;
@@ -121,7 +138,7 @@ export class SonioxConnection {
   }
 
   /** Closes immediately without waiting — used to drop the OLD connection ~1s after a
-   *  renew/reconnect swap (overlap window per §Architecture "Temp key TTL"). */
+   *  reconnect swap (overlap window per §Architecture). */
   close(): void {
     this.session?.close();
   }

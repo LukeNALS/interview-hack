@@ -1,6 +1,6 @@
 /**
- * Reconnect-buffer primitives (§Architecture, Implementation Step 13's lib portion) +
- * temp-key renewal scheduling (SU R7 — key TTL 3600s, renew at TTL-120s).
+ * Reconnect-buffer primitives (§Architecture, Implementation Step 13's lib portion). Không còn renew
+ * key định kỳ: key single-use, stream sống tới `max_session_duration` — mỗi lần reconnect xin cặp MỚI.
  *
  * Audio is NEVER written to disk/IndexedDB (AC6) — `ReconnectBuffer` is RAM-only, capped
  * at 2 minutes, and cleared immediately after a successful replay.
@@ -61,32 +61,4 @@ export class ReconnectBuffer {
  */
 export function epochConnForReplay(chunks: readonly BufferedChunk[]): number | null {
   return chunks.length > 0 ? chunks[0].captureTs : null;
-}
-
-export interface KeyLease {
-  key: string;
-  /** Epoch ms. */
-  expiresAt: number;
-}
-
-export interface RenewalScheduleOptions {
-  /** Lead time before expiry to trigger renewal. Default 120_000ms (TTL-120s, SU R7). */
-  leadMs?: number;
-  now?: () => number;
-  setTimeoutFn?: typeof setTimeout;
-  clearTimeoutFn?: typeof clearTimeout;
-}
-
-/** Schedules `onRenewDue` at `expiresAt - leadMs` (clamped to >=0 if already past due).
- *  Returns a cancel function — call it on stopCapture()/unmount to avoid a stray renew
- *  firing after the session ended. */
-export function scheduleKeyRenewal(
-  lease: KeyLease,
-  onRenewDue: () => void,
-  opts: RenewalScheduleOptions = {},
-): () => void {
-  const { leadMs = 120_000, now = Date.now, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = opts;
-  const delay = Math.max(0, lease.expiresAt - leadMs - now());
-  const timer = setTimeoutFn(onRenewDue, delay);
-  return () => clearTimeoutFn(timer);
 }

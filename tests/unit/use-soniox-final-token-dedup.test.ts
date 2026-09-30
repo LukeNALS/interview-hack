@@ -66,7 +66,7 @@ describe("SonioxStreamController — token provisional không được lọt và
       sessionFactory: factory,
       handlers: { onCanonicalFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — Soniox bắn bản provisional trước, rồi phát LẠI cả câu dưới dạng final.
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは、自己紹介をお", { language: "ja", speaker: "1", start_ms: 120, end_ms: 1200 }));
@@ -88,7 +88,7 @@ describe("SonioxStreamController — token provisional không được lọt và
       sessionFactory: factory,
       handlers: { onCanonicalFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは"));
@@ -108,7 +108,7 @@ describe("SonioxStreamController — token provisional không được lọt và
       sessionFactory: factory,
       handlers: { onPartial },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — đuôi provisional lớn dần theo từng response.
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは", { start_ms: 120, end_ms: 600 }));
@@ -128,7 +128,7 @@ describe("SonioxStreamController — token provisional không được lọt và
       sessionFactory: factory,
       handlers: { onPartial },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — response 1: [120,600]; response 2: phát lại [120,600] + phần mới [600,1200].
     instances[CANONICAL].handlers["token"]?.(partialToken("こんにちは", { start_ms: 120, end_ms: 600 }));
@@ -149,7 +149,7 @@ describe("SonioxStreamController — token provisional không được lọt và
       sessionFactory: factory,
       handlers: { onEnFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — "Hello, please" provisional rồi "Hello, please introduce yourself" final.
     instances[EN].handlers["token"]?.(finalToken("こんにちは", { language: "ja" }));
@@ -172,7 +172,7 @@ describe("SonioxStreamController — token provisional không được lọt và
       sessionFactory: factory,
       handlers: { onCanonicalFinal },
     });
-    await controller.open("key");
+    await controller.open({ canonical: "key-canonical", en: "key-en" });
 
     // Act — câu 1 final + đuôi provisional dư, endpoint, rồi câu 2.
     instances[CANONICAL].handlers["token"]?.(finalToken("câu một", { start_ms: 0, end_ms: 900 }));

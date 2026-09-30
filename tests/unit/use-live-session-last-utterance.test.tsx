@@ -51,7 +51,6 @@ vi.mock("@/hooks/use-soniox", () => ({
     async open() {}
     async stop() {}
     async reconnect() {}
-    async renew() {}
     feed() {}
     getEpochConnMs() {
       return 0;
@@ -85,18 +84,10 @@ vi.mock("@/lib/audio/silence-detector", () => ({
   createAnalyserRmsReader: () => () => 0,
 }));
 
-vi.mock("@/lib/soniox/temp-key-client", () => ({
-  TempKeyClient: class {
-    currentLease = { key: "k-test", expiresAt: Date.now() + 60_000 };
-    async fetchInitial() {
-      return this.currentLease;
-    }
-    async renew() {
-      return this.currentLease;
-    }
-    scheduleRenewal() {}
-    dispose() {}
-  },
+vi.mock("@/hooks/live-session/live-session-api-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/live-session/live-session-api-client")>()),
+  // Key single-use xin SAU capture — test không đụng mạng thật.
+  fetchSonioxPairKeys: async () => ({ canonical: "k-canonical", en: "k-en" }),
 }));
 
 vi.mock("@/lib/realtime/subscribe-client", () => ({

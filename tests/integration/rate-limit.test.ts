@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { NextRequest } from "next/server";
 
 // Route/lib dưới test có `import "server-only"` — mock rỗng để chạy dưới vitest.
@@ -159,7 +159,22 @@ function mutationsOn(table: string): Array<{ table: string; op: string }> {
   return tableOps.filter((o) => o.table === table);
 }
 
+/**
+ * Chặn MỌI gọi mạng thật trong file này: route soniox-key gọi api.soniox.com bằng
+ * `fetch`. Ca nào cần fetch tự stub lại; ca "bị chặn thì không gọi Soniox" assert
+ * `fetchGuard` không được gọi.
+ */
+const fetchGuard = vi.fn(async (input: unknown): Promise<never> => {
+  throw new Error(`unexpected network call in test: ${String(input)}`);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 beforeEach(() => {
+  fetchGuard.mockClear();
+  vi.stubGlobal("fetch", fetchGuard);
   bumpCalls = [];
   tableOps = [];
   rpcCalls = [];
@@ -251,6 +266,37 @@ describe("rate limit — POST /api/sessions/:id/soniox-key (session-scoped)", ()
     expect(body.error.code).toBe("rate_limit_exceeded");
     expect(bumpCallFor("soniox-key")).toEqual({ key: "soniox-key:session-1", window: "3600 seconds", limit: 60 });
     expect(bumpCallFor("soniox-key").key).not.toContain("user-1");
+    expect(fetchGuard).not.toHaveBeenCalled(); // vượt hạn ⇒ KHÔNG mint key
+  });
+
+  // Endpoint mint là CỬA TỐN PHÍ: rate limit không kiểm được (lỗi quyền HOẶC lỗi hạ tầng) ⇒
+  // fail-CLOSED, không gọi Soniox. Đảo quyết định fail-open cũ của P07 H-1 chỉ cho route này.
+  test("test_rate_limit_soniox_key_when_permission_denied_returns_503_without_calling_soniox", async () => {
+    // Arrange — grant bump_rate_limit bị mất (42501)
+    rateLimitRpcError = { message: "permission denied for function bump_rate_limit", code: "42501" };
+
+    // Act
+    const res = await sonioxKeyPost(makeRequest({}), makeCtx());
+    const body = await res.json();
+
+    // Assert
+    expect(res.status).toBe(503);
+    expect(body.error.code).toBe("rate_limit_unavailable");
+    expect(fetchGuard).not.toHaveBeenCalled();
+  });
+
+  test("test_rate_limit_soniox_key_when_rpc_infra_error_returns_503_without_calling_soniox", async () => {
+    // Arrange — RPC lỗi hạ tầng (không có SQLSTATE 42501)
+    rateLimitRpcError = { message: "connection reset", code: "08006" };
+
+    // Act
+    const res = await sonioxKeyPost(makeRequest({}), makeCtx());
+    const body = await res.json();
+
+    // Assert
+    expect(res.status).toBe(503);
+    expect(body.error.code).toBe("rate_limit_unavailable");
+    expect(fetchGuard).not.toHaveBeenCalled();
   });
 });
 
@@ -405,19 +451,49 @@ describe("checkRateLimit — fail-open khi RPC lỗi hạ tầng", () => {
     expect(decision).toEqual({ allowed: true });
   });
 
-  test("test_rate_limit_soniox_key_when_rpc_errors_does_not_block_with_429", async () => {
-    // Arrange — lỗi hạ tầng ở tầng route (không phải quota); soniox-key có
-    // onPermissionDenied mặc định fail-open nên lỗi hạ tầng cũng fail-open
-    rateLimitRpcError = { message: "statement timeout" };
-    sessionRow = null;
+  test("test_check_rate_limit_when_infra_error_and_on_infra_error_closed_returns_backend_denied", async () => {
+    // Arrange — call site cố ý chọn fail-closed cho lỗi hạ tầng (đường /soniox-key)
+    rateLimitRpcError = { message: "connection reset" };
 
     // Act
-    const res = await sonioxKeyPost(makeRequest({}), makeCtx());
-    const body = await res.json();
+    const decision = await checkRateLimit({ key: "any:key", windowSeconds: 3600, limit: 10, onInfraError: "closed" });
 
-    // Assert — fail-open: đi tiếp tới handler (404), KHÔNG trả 429
-    expect(res.status).toBe(404);
-    expect(body.error.code).toBe("not_found");
+    // Assert — chặn, phân biệt được với "user vượt hạn"
+    expect(decision).toEqual({ allowed: false, reason: "backend_denied" });
+  });
+
+  test("test_check_rate_limit_when_permission_denied_closed_and_infra_open_infra_error_still_allows", async () => {
+    // Arrange — chiều ngược lại của 2 option độc lập: lỗi HẠ TẦNG theo onInfraError, không bị onPermissionDenied kéo theo
+    rateLimitRpcError = { message: "connection reset" };
+
+    // Act
+    const decision = await checkRateLimit({
+      key: "any:key",
+      windowSeconds: 3600,
+      limit: 10,
+      onPermissionDenied: "closed",
+      onInfraError: "open",
+    });
+
+    // Assert
+    expect(decision).toEqual({ allowed: true });
+  });
+
+  test("test_check_rate_limit_when_permission_denied_open_and_infra_closed_permission_denied_still_allows", async () => {
+    // Arrange — 2 option độc lập: lỗi QUYỀN theo onPermissionDenied, không bị onInfraError kéo theo
+    rateLimitRpcError = { message: "permission denied for function bump_rate_limit", code: "42501" };
+
+    // Act
+    const decision = await checkRateLimit({
+      key: "any:key",
+      windowSeconds: 3600,
+      limit: 10,
+      onPermissionDenied: "open",
+      onInfraError: "closed",
+    });
+
+    // Assert
+    expect(decision).toEqual({ allowed: true });
   });
 
   test("test_check_rate_limit_when_rpc_returns_false_blocks_request", async () => {
@@ -534,14 +610,13 @@ describe("getClientIp", () => {
 /**
  * H-1 — ĐƯỜNG SỐNG CÒN của buổi phỏng vấn phải fail-OPEN khi grant lệch (42501).
  *
- * Hành lang: `/start` -> `/soniox-key` -> `/utterances` -> `/end`. Ban đầu chỉ
- * `/utterances` được miễn, nhưng như vậy VÔ NGHĨA: `/soniox-key` 503 thì không
- * stream nào mở, không có utterance nào để mà cứu; `/start` 503 thì còn không
- * tới được đó. Trần chi phí THẬT của hành lang này là quota free
- * (`debit_free_session`), không phải rate limit — nên nới ở đây không mở cửa
- * cho lạm dụng tiền, trong khi chặn thì làm hỏng buổi phỏng vấn đang diễn ra.
+ * Hành lang còn fail-open: `/start`, `/utterances`, `/end` (chặn = buổi không vào
+ * được / MẤT TRANSCRIPT đang thu / kẹt `live`). `/soniox-key` từng thuộc nhóm này
+ * (`/soniox-key` 503 thì không stream nào mở) nhưng đã ĐẢO sang fail-CLOSED cho cả
+ * lỗi quyền lẫn lỗi hạ tầng: mỗi key = 1 stream tốn phí, không còn renew để cứu
+ * stream đang chạy — xem nhóm test `/soniox-key` ở trên.
  */
-describe("H-1 — hành lang buổi phỏng vấn fail-OPEN khi 42501", () => {
+describe("H-1 — /start, /utterances, /end vẫn fail-OPEN khi 42501", () => {
   const PERMISSION_DENIED_ERROR = {
     message: "permission denied for function bump_rate_limit",
     code: "42501",
@@ -562,19 +637,6 @@ describe("H-1 — hành lang buổi phỏng vấn fail-OPEN khi 42501", () => {
     const res = await sessionStartPost(makeRequest({}), makeCtx());
 
     // Assert — KHÔNG bị chặn: buổi vẫn bắt đầu được
-    expect(res.status).not.toBe(429);
-    expect(res.status).not.toBe(503);
-  });
-
-  test("test_rate_limit_soniox_key_when_permission_denied_still_issues_key", async () => {
-    // Arrange — cửa vào đường thu âm; chặn ở đây là không stream nào mở nổi
-    rateLimitRpcError = PERMISSION_DENIED_ERROR;
-    sessionRow = liveSessionRow();
-
-    // Act
-    const res = await sonioxKeyPost(makeRequest({}), makeCtx());
-
-    // Assert
     expect(res.status).not.toBe(429);
     expect(res.status).not.toBe(503);
   });

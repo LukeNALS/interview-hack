@@ -62,13 +62,22 @@ export class PcmWorkletCapture {
   private audioContext: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private pending: number[] = [];
+  /** `stop()` đã được gọi — kể cả TRƯỚC hoặc TRONG `start()`: lúc đó `node`/`audioContext` còn null nên
+   *  `stop()` không tắt được gì, `start()` phải tự thoát (mic không được bật mồ côi khi lỗi Soniox fatal
+   *  đến sớm). Mỗi instance chỉ start/stop 1 lần. */
+  private stopped = false;
 
   constructor(private readonly opts: PcmWorkletOptions) {}
 
   async start(stream: MediaStream): Promise<void> {
+    if (this.stopped) return;
     const ctx = new AudioContext();
     const moduleUrl = new URL("./worklet-processor.js", import.meta.url);
     await ctx.audioWorklet.addModule(moduleUrl);
+    if (this.stopped) {
+      void ctx.close();
+      return;
+    }
     const source = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, PROCESSOR_NAME, {
       processorOptions: { chunkMs: this.opts.chunkMs ?? CHUNK_MS },
@@ -95,6 +104,7 @@ export class PcmWorkletCapture {
   }
 
   stop(): void {
+    this.stopped = true;
     this.node?.port.close();
     this.node?.disconnect();
     void this.audioContext?.close();

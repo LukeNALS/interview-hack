@@ -4,7 +4,6 @@ import { stopDirectCapture } from "@/lib/audio/capture-direct";
 import { stopOnlineCapture } from "@/lib/audio/capture-online";
 import type { PcmWorkletCapture } from "@/lib/audio/pcm-worklet";
 import type { SilenceDetector } from "@/lib/audio/silence-detector";
-import type { TempKeyClient } from "@/lib/soniox/temp-key-client";
 import type { AlignBuffer } from "@/lib/transcript/align";
 import type { IngestQueue } from "@/lib/transcript/ingest-queue";
 import type { SeqBuffer } from "@/lib/transcript/seq-buffer";
@@ -74,7 +73,6 @@ export interface LivePipeline {
   rawStreams: MediaStream[];
   ingestQueue: IngestQueue | null;
   seqBuffer: SeqBuffer | null;
-  tempKeyClient: TempKeyClient | null;
   silenceDetector: SilenceDetector | null;
   unsubscribe: (() => void) | null;
   /** Trigger "gợi ý đào sâu" (N13b) — dispose cùng pipeline để timer debounce không sống mồ côi. */
@@ -93,7 +91,6 @@ function createPipeline(sessionId: string): LivePipeline {
     rawStreams: [],
     ingestQueue: null,
     seqBuffer: null,
-    tempKeyClient: null,
     silenceDetector: null,
     unsubscribe: null,
     suggestionTrigger: null,
@@ -151,8 +148,6 @@ export function disposeLivePipeline(pipeline: LivePipeline): void {
   pipeline.rawStreams = [];
   pipeline.silenceDetector?.stop();
   pipeline.silenceDetector = null;
-  pipeline.tempKeyClient?.dispose();
-  pipeline.tempKeyClient = null;
 }
 
 /** Unmount: bớt 1 instance; instance cuối cùng rời màn mới đóng pipeline + xoá khỏi registry. */

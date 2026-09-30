@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ReconnectBuffer, epochConnForReplay, scheduleKeyRenewal } from "@/lib/soniox/reconnect";
+import { ReconnectBuffer, epochConnForReplay } from "@/lib/soniox/reconnect";
 
 describe("ReconnectBuffer — RAM-only, capped at 2 minutes", () => {
   test("test_reconnect_buffer_push_and_drain_returns_chunks_in_capture_order", () => {
@@ -46,64 +46,5 @@ describe("epochConnForReplay — fix B13", () => {
 
   test("test_epoch_conn_for_replay_empty_buffer_returns_null", () => {
     expect(epochConnForReplay([])).toBeNull();
-  });
-});
-
-describe("scheduleKeyRenewal — TTL-120s lead time (SU R7)", () => {
-  test("test_schedule_key_renewal_fires_at_ttl_minus_lead_ms", () => {
-    // Arrange
-    let scheduledDelay: number | null = null;
-    const fakeSetTimeout = ((_cb: () => void, ms: number) => {
-      scheduledDelay = ms;
-      return 1 as unknown as ReturnType<typeof setTimeout>;
-    }) as typeof setTimeout;
-    const lease = { key: "temp-key", expiresAt: 100_000 };
-
-    // Act
-    scheduleKeyRenewal(lease, () => {}, {
-      leadMs: 120_000 - 100_000 + 20_000, // arbitrary, just verifying the math below
-      now: () => 0,
-      setTimeoutFn: fakeSetTimeout,
-    });
-
-    // Assert — delay = expiresAt - leadMs - now()
-    expect(scheduledDelay).toBe(100_000 - 40_000 - 0);
-  });
-
-  test("test_schedule_key_renewal_clamps_negative_delay_to_zero_when_already_past_due", () => {
-    // Arrange
-    let scheduledDelay: number | null = null;
-    const fakeSetTimeout = ((_cb: () => void, ms: number) => {
-      scheduledDelay = ms;
-      return 1 as unknown as ReturnType<typeof setTimeout>;
-    }) as typeof setTimeout;
-    const lease = { key: "temp-key", expiresAt: 1000 };
-
-    // Act — leadMs (120_000) alone already exceeds expiresAt -> would-be-negative delay
-    scheduleKeyRenewal(lease, () => {}, { now: () => 0, setTimeoutFn: fakeSetTimeout });
-
-    // Assert
-    expect(scheduledDelay).toBe(0);
-  });
-
-  test("test_schedule_key_renewal_cancel_clears_the_underlying_timer", () => {
-    // Arrange
-    let cleared = false;
-    const fakeClear = (() => {
-      cleared = true;
-    }) as typeof clearTimeout;
-    const fakeSetTimeout = ((() => 1) as unknown) as typeof setTimeout;
-    const lease = { key: "temp-key", expiresAt: 200_000 };
-
-    // Act
-    const cancel = scheduleKeyRenewal(lease, () => {}, {
-      now: () => 0,
-      setTimeoutFn: fakeSetTimeout,
-      clearTimeoutFn: fakeClear,
-    });
-    cancel();
-
-    // Assert
-    expect(cleared).toBe(true);
   });
 });

@@ -7,42 +7,79 @@ import { getServerEnv } from "@/lib/env";
 import { computeElapsedSeconds } from "@/lib/cap-clock";
 
 // Endpoint MỚI (SU AC8), chưa có trong SYSTEM_DESIGN §3 gốc.
-// POST /api/sessions/:id/soniox-key → cấp/renew temp key Soniox (TTL 3600s — P05 bước 3).
+// POST /api/sessions/:id/soniox-key → cấp 1 CẶP temp key Soniox SINGLE-USE (canonical + en):
+// mỗi key mở đúng 1 connection, dùng lại ⇒ 401 sau khi connect (E1). Không còn renew — client xin
+// cặp MỚI ở mỗi lần start/reconnect.
 // requireEmailConfirmed: route tốn phí (mở connection ASR) — bắt buộc email đã xác nhận.
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 const SONIOX_TEMP_KEY_URL = "https://api.soniox.com/v1/auth/temporary-api-key";
-const SONIOX_KEY_EXPIRES_IN_SECONDS = 3600;
-// Không set max_session_duration_seconds — hiệu lực tham số này CHƯA xác định (confound với lỗi
-// 408 quan sát ở POC, xem docs/soniox-integration-notes.md) nên bỏ qua để tránh cắt sớm ngoài ý muốn.
+// TTL chỉ chặn MỞ stream mới (E3); stream đang chạy sống tiếp qua expiry. Ngắn để key rò không dùng được lâu.
+const SONIOX_KEY_TTL_SECONDS = 60;
+// Giới hạn provider của max_session_duration_seconds: 1–18000.
+const SONIOX_MAX_SESSION_DURATION_SECONDS = 18000;
+// Duration đếm PER STREAM từ lúc connect (E4/E5): hết ⇒ server cắt cứng 403 temp_api_key_session_expired.
+// Đặt = thời gian còn lại của cap ⇒ vượt cap tối đa = TTL (key mint lúc T, mở trễ nhất T+TTL).
+const KEYS_PER_PAIR = 2;
+// Không để mint treo giữ request (và vòng reconnect backoff của client) tới khi platform ngắt; Node fetch đo 3,6–3,9 s
+// trên máy dev, 10 s chừa dư địa — P04 đo `soniox_ms` thật.
+const SONIOX_MINT_TIMEOUT_MS = 10_000;
 
 interface SonioxTempKeyResponse {
   api_key: string;
   expires_at: string;
 }
 
-async function fetchSonioxTempKey(): Promise<SonioxTempKeyResponse> {
+function sonioxKeyFailed(): AppError {
+  return new AppError("Không thể cấp Soniox key — thử lại", 502, "soniox_key_failed");
+}
+
+async function fetchSonioxTempKey(params: { remainingSeconds: number; sessionId: string }): Promise<SonioxTempKeyResponse> {
   const { SONIOX_API_KEY } = getServerEnv();
+  try {
+    return await requestSonioxTempKey(SONIOX_API_KEY, params);
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    // Mạng/timeout/JSON hỏng: đừng để rơi thành 500 internal_error — client không nhận ra đó là lỗi dịch vụ cấp key.
+    console.error("[soniox-key] gọi Soniox thất bại", { error: err instanceof Error ? err.name : "unknown" });
+    throw sonioxKeyFailed();
+  }
+}
+
+async function requestSonioxTempKey(
+  apiKey: string,
+  params: { remainingSeconds: number; sessionId: string },
+): Promise<SonioxTempKeyResponse> {
   const res = await fetch(SONIOX_TEMP_KEY_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${SONIOX_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(SONIOX_MINT_TIMEOUT_MS),
     body: JSON.stringify({
       usage_type: "transcribe_websocket",
-      expires_in_seconds: SONIOX_KEY_EXPIRES_IN_SECONDS,
-      single_use: false,
+      expires_in_seconds: SONIOX_KEY_TTL_SECONDS,
+      single_use: true,
+      // remaining là số nguyên ≥ 1: cap_seconds int, elapsed đã floor, guard cap_reached chạy trước.
+      max_session_duration_seconds: Math.min(params.remainingSeconds, SONIOX_MAX_SESSION_DURATION_SECONDS),
+      // UUID phiên, không PII, gắn phía server ⇒ đối soát chi phí theo phiên qua GET /v1/usage-logs.
+      client_reference_id: params.sessionId,
     }),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     console.error("[soniox-key] Soniox API lỗi", { status: res.status, body: text.slice(0, 500) });
-    throw new AppError("Không thể cấp Soniox key — thử lại", 502, "soniox_key_failed");
+    throw sonioxKeyFailed();
   }
-  return (await res.json()) as SonioxTempKeyResponse;
+  const key = (await res.json()) as Partial<SonioxTempKeyResponse>;
+  if (typeof key.api_key !== "string" || key.api_key === "" || typeof key.expires_at !== "string") {
+    console.error("[soniox-key] Soniox API trả body thiếu api_key/expires_at");
+    throw sonioxKeyFailed();
+  }
+  return { api_key: key.api_key, expires_at: key.expires_at };
 }
 
 export const POST = withAuth(
@@ -67,22 +104,38 @@ export const POST = withAuth(
       throw new AppError("Đã chạm giới hạn thời lượng buổi phỏng vấn", 403, "cap_reached");
     }
 
-    // fail-OPEN khi 42501 [P07 fix H-1]: đây là CỬA VÀO của cả đường thu âm.
-    // Fail-closed ở đây làm ngoại lệ fail-open của /utterances thành vô nghĩa —
-    // không lấy được temp key thì không stream nào mở, không có utterance nào
-    // để mà cứu. Buổi đang chạy còn tệ hơn: renew() hỏng là stream chết câm.
+    // fail-CLOSED khi rate limit KHÔNG kiểm được — cả lỗi quyền (42501) lẫn lỗi hạ tầng (RPC
+    // timeout/5xx) ⇒ 503 rate_limit_unavailable, KHÔNG gọi Soniox. Đảo quyết định fail-open ở
+    // P07 H-1 CHỈ cho route này: nay endpoint tốn phí thật (mỗi key = 1 stream) và không còn
+    // renew định kỳ để "cứu" stream đang chạy; client báo lỗi rõ + reconnect backoff thay vì chết
+    // câm. `/utterances`, `/start`, `/end` giữ nguyên fail-open (chặn = mất transcript / kẹt live).
     const decision = await checkRateLimit({
       key: `soniox-key:${id}`,
       windowSeconds: 3600,
       limit: 60,
-      onPermissionDenied: "open",
+      onPermissionDenied: "closed",
+      onInfraError: "closed",
     });
     if (!decision.allowed) {
       throw rateLimitError(decision.reason, "Vượt giới hạn cấp key trong giờ — thử lại sau");
     }
 
-    const key = await fetchSonioxTempKey();
-    return NextResponse.json({ keys: [key.api_key], expires_at: key.expires_at });
+    const remainingSeconds = session.cap_seconds - elapsed;
+    const startedAt = performance.now();
+    // 1 request = 1 pair; 2 mint song song nên độ trễ không cộng dồn. Một mint lỗi ⇒ 502 và bỏ
+    // key còn lại (chưa mở stream = không tính phí).
+    const keys = await Promise.all(
+      Array.from({ length: KEYS_PER_PAIR }, () => fetchSonioxTempKey({ remainingSeconds, sessionId: id })),
+    );
+    // Không log key/expires_at — chỉ số đo độ trễ mint (P04 đọc trên Vercel Logs).
+    console.info("[soniox-key] issued", {
+      session_id: id,
+      soniox_ms: Math.round(performance.now() - startedAt),
+      remaining_s: remainingSeconds,
+    });
+
+    const earliestExpiry = keys.reduce((min, k) => (Date.parse(k.expires_at) < Date.parse(min) ? k.expires_at : min), keys[0].expires_at);
+    return NextResponse.json({ keys: keys.map((k) => k.api_key), expires_at: earliestExpiry });
   },
   { requireEmailConfirmed: true },
 );

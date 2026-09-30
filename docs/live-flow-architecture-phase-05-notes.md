@@ -43,9 +43,11 @@ cap-countdown,connection-banner}.ts`, hoặc route `start`/`soniox-key`/`utteran
   type ở P05, không còn unresolved).
 - `POST /api/sessions/:id/start` — 200 `{started_at, cap_seconds}`. 409
   `invalid_session_status`/`no_free_sessions`/`session_already_started`.
-- `POST /api/sessions/:id/soniox-key` (`requireEmailConfirmed`) — 200 `{keys:[key],
-  expires_at}` **LUÔN 1 phần tử** dù là mảng — caller PHẢI `keys[0]`. 403 `cap_reached`
-  (elapsed≥cap_seconds), 429 (60/giờ/session), 502 `soniox_key_failed`.
+- `POST /api/sessions/:id/soniox-key` (`requireEmailConfirmed`) — 200 `{keys:[canonical, en],
+  expires_at}` **LUÔN 2 key single-use KHÁC nhau** (TTL 60 s, mỗi key mở đúng 1 stream): `keys[0]` cho
+  connection canonical, `keys[1]` cho en, KHÔNG dùng lại key; mỗi start/reconnect xin cặp MỚI. 403
+  `cap_reached` (elapsed≥cap_seconds), 429 (60/giờ/session), 502 `soniox_key_failed`, 503
+  `rate_limit_unavailable` (rate limit không kiểm được ⇒ fail-closed, không gọi Soniox).
 - `POST /api/sessions/:id/utterances` (batch 1-5, ≤8KB/item) — 200
   `{results:[{client_utt_id,seq}]}`. Idempotent theo `(session_id, client_utt_id)`: trùng →
   **overwrite toàn bộ** `translations`/`en_pending` (KHÔNG deep-merge, client phải gửi lại
@@ -72,7 +74,7 @@ cap-countdown,connection-banner}.ts`, hoặc route `start`/`soniox-key`/`utteran
   `clock_offset` persist trong `localStorage` (key theo `session_id`, ghi NGAY sau `/start` =
   `t0_local - started_at_server`) — **fix B14**.
 - `epoch_conn` — set ở LẦN FEED ĐẦU TIÊN của mỗi `SonioxConnection`, cố định tới khi
-  reconnect/renew swap connection mới.
+  reconnect swap connection mới.
 - `capture_ts` — `Date.now()` lúc audio chunk được capture (client); khi replay sau reconnect,
   `epoch_conn` connection mới = `capture_ts` của **chunk đầu tiên** trong `ReconnectBuffer` —
   **fix B13** (`epochConnForReplay`).
@@ -80,37 +82,48 @@ cap-countdown,connection-banner}.ts`, hoặc route `start`/`soniox-key`/`utteran
   lại bằng đồng hồ mình ở bất kỳ layer nào (kể cả cap-check dùng `computeElapsedSeconds`, đó
   là layer khác — enforce cap, không phải trục hiển thị).
 
-## Pattern reconnect / renew Soniox WS
+## Pattern reconnect Soniox WS (key single-use, không renew)
+
+Mỗi connection dùng 1 key SINGLE-USE; client xin CẶP key mới (canonical + en) cho mỗi lần start và mỗi
+lượt reconnect. Không còn renew định kỳ (xem `soniox-integration-notes.md` mục Temp key).
 
 - `SonioxStreamController.stop()` set `this.stopped = true` **trước** khi đóng connection —
-  mọi guard khác dựa vào cờ này.
-- `reconnect()`/`renew()` đều: mở pair mới → `await openAllReady(...)` → **guard
-  `if (this.stopped)`** → nếu true, `closeAll([newCanonical, newEn])` rồi return ngay, KHÔNG
-  swap/KHÔNG `onRestored()`. Guard này fix leak race NEW-1 (round 2): nếu `stop()` xảy ra
-  đúng lúc `reconnect()`/`renew()` đang `await` mở pair mới, pair mới đó không còn ai giữ
-  reference để đóng — leak WebSocket, đốt quota 10 concurrent/project. Xem `use-soniox.ts`
-  (`reconnect()`/`renew()`) cho code thật + comment tại chỗ.
+  mọi guard khác dựa vào cờ này. Lỗi Soniox không thử lại được (`reportFatal`) cũng set `stopped`.
+- `reconnect(keys)`: mở pair mới → `await openAllReady(...)` → **guard `if (this.stopped)`** → nếu
+  true, `closeAll([newCanonical, newEn])` rồi return ngay, KHÔNG swap/KHÔNG `onRestored()`. Guard này
+  fix leak race NEW-1 (round 2): nếu `stop()` xảy ra đúng lúc `reconnect()` đang `await` mở pair mới,
+  pair mới đó không còn ai giữ reference để đóng — leak WebSocket, đốt quota 10 concurrent/project.
+  Xem `use-soniox.ts` (`reconnect()`) cho code thật + comment tại chỗ.
 - `reconnect()` chỉ `drain()` `ReconnectBuffer` **sau** khi pair mới ready (không phải trước —
   bug thứ cấp round 1 đã fix, tránh mất chunk feed trong lúc await).
+- Lỗi server sau connect (event `error`, SDK KHÔNG bắn `disconnected`): controller phân loại bằng
+  `classifySonioxRealtimeError`. `retry` (401/408/5xx/ConnectionError) đi chung đường `disconnected` →
+  `onDegraded` → reconnect với cặp key mới (429 `limit_exceeded` cũng là `retry`); `session_expired`/
+  `forbidden`/`quota` (402: hết số dư/budget)/`fatal` → `onFatal`
+  đúng 1 lần (dừng luồng đó, toast trừ `session_expired`). Lỗi của pair MỚI đến trước khi swap: handler
+  bỏ qua vì chưa là connection hiện tại nên `reconnect()` tự kiểm `conn.error` — `retry` ném để backoff
+  xin cặp khác, loại còn lại báo fatal.
 - `handleDisconnected` có guard 2 lớp: `stopped` (chặn đóng chủ động tự trigger reconnect) +
-  `conn !== this.canonical && conn !== this.en` (chặn disconnect trễ từ connection đã bị swap
-  ra bởi renew/reconnect trước đó).
-- Retry: `reconnectWithBackoff` (`use-live-session.ts`) tối đa **3 lần**, backoff 1s/2s/4s, hết
-  lượt → `onGiveUp` dừng capture luồng đó + toast, banner giữ nguyên degraded (không tự phục
-  hồi).
-- Renew theo lịch TTL−120s (lease dùng chung mic+tab qua `TempKeyClient`), overlap 1s trước
-  khi đóng pair cũ (`swapConnections` dùng `setTimeout(1000)`).
+  `conn !== this.canonical && conn !== this.en` (chặn disconnect/lỗi trễ từ connection đã bị swap
+  ra bởi reconnect trước đó).
+- Retry: `reconnectWithBackoff` (`live-session-lifecycle.ts`) tối đa **3 lần**, chờ 1s rồi 2s giữa các lượt (không chờ sau lượt cuối, tổng ~3s + thời gian request),
+  xin cặp key MỚI mỗi lượt. Lỗi route không đáng thử lại (`cap_reached`, `invalid_session_status`,
+  `not_found`, `email_not_confirmed`, `rate_limit_exceeded`) → bỏ cuộc ngay;
+  `rate_limit_unavailable` (503, route fail-closed) và `soniox_key_failed` (502) vẫn backoff. Hết lượt
+  → `onGiveUp` dừng capture luồng đó + toast (nói rõ "dịch vụ tạm thời không khả dụng" với 503), banner
+  giữ nguyên degraded (không tự phục hồi).
+- Trần cho VÒNG degrade→reconnect: `reconnect-streak-guard.ts` (`attach-stream.ts` gọi). 3 lượt ở trên chỉ áp
+  trong MỘT lần `reconnectWithBackoff`; nếu connection mở được rồi mới bị từ chối/ngắt (401 ~230 ms sau connect,
+  429, 5xx) thì controller degrade lại và mở vòng mới. Guard đếm degrade xảy ra < 10 s sau lúc (re)connect
+  xong: lần 1 reconnect ngay, lần 2 chờ 1 s (`initialDelayMs`), lần 3 chờ 2 s, lần 4 bỏ cuộc (dừng luồng
+  đó + toast); ổn định ≥ 10 s thì reset. Rate limit 60/giờ của route mint chỉ còn là lưới cuối.
 - **KHÔNG để connection treo khi mic im lặng dài** (dẫn tới `408 request_timeout`, xem
   `soniox-integration-notes.md`) — MVP chọn phương án 2 (đóng+mở lại qua reconnect khi rớt),
   KHÔNG gửi silence frame giữ sống.
-- Quan sát chưa fix (không blocking): `renew()`/`reconnect()` có thể race NHAU (không phải với
-  `stop()`) nếu trigger trùng lúc — chưa có mutex, tần suất cực hiếm, để ticket P07 chung với
-  smoke-test SDK thật.
-- **WAVE A (2026-08-18) — N2:** chuỗi renew đi qua `renewKeyWithRetry`
-  (`src/lib/soniox/renew-with-retry.ts`): retry trần 4 lượt, backoff 2/4/8s, banner vàng khi
-  trục trặc → xanh khi hồi → banner+toast khi bỏ cuộc. Lượt renew kế tiếp CHỈ được hẹn khi
-  lượt hiện tại thật sự xong. Trước đó `renew()` gọi trần trong `void (async…)()` không catch,
-  ném 1 lần là chuỗi dừng CÂM (key hết hạn → stream tắt giữa buổi, không banner nào).
+- Lịch sử N2 (2026-08-18, đã hết đối tượng): chuỗi renew định kỳ từng đi qua `renewKeyWithRetry` sau khi
+  phát hiện renew ném 1 lần là chuỗi dừng câm. Renew định kỳ đã gỡ cùng key single-use (2026-09-29) nên
+  cả chuỗi lẫn `renewKeyWithRetry`/`TempKeyClient` không còn; nguyên tắc rút ra còn giá trị: lỗi ở đường
+  nền phải có banner/toast thay vì dừng câm — nay do nhánh `onFatal`/`onGiveUp` đảm nhiệm.
 
 ## Quy ước test liên quan
 
@@ -123,7 +136,7 @@ cap-countdown,connection-banner}.ts`, hoặc route `start`/`soniox-key`/`utteran
   không cần mount toàn bộ hook: `resolveT0LocalMs`, `resyncAfterReconnect`, `handleSeqGap`,
   `closeAllStreamsOnce`, `flushIngestQueueBeforeEnd`, `reconnectWithBackoff` — đều nằm trong
   `use-live-session.ts`, xuất riêng cho test.
-- Race/leak (`stop()` giữa lúc `reconnect()`/`renew()` await) verify bằng test thực nghiệm
+- Race/leak (`stop()` giữa lúc `reconnect()` await) verify bằng test thực nghiệm
   (gate `connect()` treo thủ công rồi resolve trễ) — không phải suy đoán từ đọc code, xem
   `tests/unit/use-soniox.test.ts`.
 
@@ -134,7 +147,7 @@ cap-countdown,connection-banner}.ts`, hoặc route `start`/`soniox-key`/`utteran
   SQL Editor (không chạy `psql`/MCP theo đúng lý do đã ghi ở `backend-llm-cv-architecture-
   phase-04-notes.md`). `0005` chỉ thêm 1 cột `sessions.cap_seconds` — các phần khác (enum,
   unique, index) đã có sẵn từ `0001_init.sql`, KHÔNG lặp lại.
-- **Smoke test Soniox thật bắt buộc trước demo** — toàn bộ 20+ test reconnect/renew/stop dùng
+- **Smoke test Soniox thật bắt buộc trước demo** — toàn bộ 20+ test reconnect/stop dùng
   fake session factory, CHƯA verify timing thật với SDK. Kịch bản bắt buộc: chủ động ngắt
   mạng/rớt Soniox WS giữa buổi (không chỉ happy-path), xác nhận banner vàng→xanh + transcript
   không mất đoạn.
