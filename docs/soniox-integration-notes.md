@@ -77,10 +77,11 @@ PoC Soniox nội bộ (không kèm trong repo này).
   không mất) rồi kẹp lại. Replay ném lỗi ⇒ pair mới bị đóng, pair cũ giữ nguyên, backoff thử lại.
 - **Cổng token thế hệ mới** (chặn phát lần hai phần đã emit): token gốc so ĐIỂM GIỮA với mốc đã emit của loại đó (hai phiên
   Soniox độc lập gán mốc cho cùng từ lệch nhau; so mốc kết thúc thì lọt đuôi từ thành mảnh lặp; điểm giữa chịu lệch tới nửa
-  độ dài token). Lớp thứ hai: token FINAL sát sau cổng (≤ 400 ms) mà chữ của nó cộng với chữ các token đã bỏ ở cổng đúng là
-  phần CUỐI của câu đã emit thì vẫn coi là đuôi đã emit (đo trên prod 2026-09-30: đuôi "す。" lệch +198 ms, " phút." lệch +81 ms, token
-  dài 60–180 ms nên điểm giữa không đủ); chữ khác ⇒ lời mới, qua. Chỉ xét khi chưa có token gốc final nào vượt cổng; token
-  provisional (Soniox gửi lại liên tục) chỉ bị kiểm mốc, không đổi trạng thái cổng. Token dịch không có `start_ms/end_ms` nên
+  độ dài token). Lớp thứ hai: token FINAL sát sau cổng (≤ 400 ms) mà chữ của nó nằm trong 8 ký tự CUỐI của câu đã emit thì vẫn coi là đuôi đã
+  emit (đo trên prod 2026-10-01: đuôi "す。" / " phút." lệch +80..+200 ms và về thành NHIỀU token riêng "す", "。" nên so mốc điểm giữa
+  và so khớp "chuỗi chữ là hậu tố của câu" đều không đủ — hậu tố đúng của "ます。" chỉ khớp khi đã có đủ token; luật hậu tố ở bản
+  trước đó vì vậy vẫn để lọt đuôi trên prod); chữ khác hoặc trùng chữ ở xa cuối câu ⇒ lời mới, qua. Chỉ xét khi chưa có token gốc
+  final nào vượt cổng; token provisional (Soniox gửi lại liên tục) chỉ bị kiểm mốc, không đổi trạng thái cổng. Token dịch không có `start_ms/end_ms` nên
   đi theo trạng thái: bỏ tới khi token gốc final đầu tiên của loại đó vượt cổng.
 - ⚠️ Chưa đo: độ lệch mốc thật giữa hai phiên (cần E8 có phí ~$0,035), thời gian xử lý burst replay dài (tối đa 120 s audio),
   soak ≥ 10 phút. Giới hạn đã biết, không đổi ở plan này: `PcmWorkletCapture.stop()` bỏ phần chưa đủ chunk (≤ 100 ms cuối);
