@@ -30,6 +30,8 @@ import { TokenSegmentAccumulator, type FlushedSegment } from "@/lib/soniox/token
 const PCM_BYTES_PER_MS = (SONIOX_SAMPLE_RATE_HZ * 2) / 1000;
 /** Token lệch mốc vượt dung sai điểm giữa vẫn bị coi là đuôi câu đã emit nếu bắt đầu trong khoảng này sau cổng VÀ khớp chữ cuối câu. */
 const GATE_TAIL_SLACK_MS = 400;
+/** Đuôi bị lệch chỉ gồm vài token cuối ⇒ đoạn khớp phải nằm trong chừng này ký tự cuối của câu đã emit. */
+const GATE_TAIL_REST_MAX_CHARS = 8;
 
 export interface CanonicalSegment {
   textOrig: string;
@@ -111,7 +113,6 @@ export class SonioxStreamController {
       enAcc: new TokenSegmentAccumulator(),
       gate: { canonical: Number.NEGATIVE_INFINITY, en: Number.NEGATIVE_INFINITY },
       gateOpen: { canonical: false, en: false },
-      tailProbe: { canonical: "", en: "" },
     } as ConnectionGeneration;
     gen.canonical = this.createConnection("canonical", gen);
     gen.en = this.createConnection("en", gen);
@@ -332,22 +333,23 @@ export class SonioxStreamController {
     const before = epoch + (startMs + endMs) / 2 <= gate;
     // Token provisional được Soniox gửi lại liên tục và chỉ vẽ bubble mờ: chỉ kiểm mốc, không đổi trạng thái cổng/probe.
     if (!token.is_final) return before;
-    if (before || (!gen.gateOpen[kind] && this.isShiftedEmittedTail(gen, kind, token.text, epoch + startMs, gate))) {
-      gen.tailProbe[kind] += token.text;
-      return true;
-    }
+    if (before) return true;
+    if (!gen.gateOpen[kind] && this.isShiftedEmittedTail(kind, token.text, epoch + startMs, gate)) return true;
     gen.gateOpen[kind] = true;
     return false;
   }
 
   /**
    * Hai phiên Soniox đôi khi lệch mốc của cùng một token vượt dung sai điểm giữa (đo trên prod: +81..+198 ms, token dài 60–180 ms
-   * ⇒ đuôi "す。" / " phút." của câu đã emit lọt thành utterance riêng). Token sát sau cổng chỉ bị coi là đuôi đã emit khi
-   * toàn bộ chữ đã bỏ ở cổng của thế hệ này + chữ token này đúng là phần CUỐI của câu đã emit — chữ khác thì là lời mới.
+   * ⇒ đuôi "す。" / " phút." của câu đã emit lọt thành utterance riêng; đuôi thường về thành NHIỀU token: "す" rồi "。"). Token sát
+   * sau cổng chỉ bị coi là đuôi đã emit khi chữ của nó nằm trong vài ký tự CUỐI của câu đã emit. Chữ khác, hoặc trùng chữ ở xa
+   * cuối câu ⇒ lời mới.
    */
-  private isShiftedEmittedTail(gen: ConnectionGeneration, kind: ConnKind, text: string, startAbsMs: number, gate: number): boolean {
+  private isShiftedEmittedTail(kind: ConnKind, text: string, startAbsMs: number, gate: number): boolean {
     if (startAbsMs > gate + GATE_TAIL_SLACK_MS) return false;
-    return this.lastEmittedText[kind].endsWith(gen.tailProbe[kind] + text);
+    const emitted = this.lastEmittedText[kind];
+    const at = emitted.lastIndexOf(text);
+    return at >= 0 && emitted.length - (at + text.length) <= GATE_TAIL_REST_MAX_CHARS;
   }
 
   private handleToken(gen: ConnectionGeneration, kind: ConnKind, token: RealtimeToken): void {
