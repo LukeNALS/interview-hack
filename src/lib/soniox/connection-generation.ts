@@ -20,8 +20,6 @@ export interface ConnectionGeneration {
   /** Token DỊCH không có mốc thời gian nên không gate theo thời gian được: chỉ nhận sau khi token gốc đầu tiên của loại đó
    *  vượt cổng (trước đó chúng là bản dịch của phần đã emit). */
   readonly gateOpen: Record<ConnKind, boolean>;
-  /** Chữ gốc của các token đã bỏ ở cổng (theo loại) từ đầu thế hệ — để nhận ra đuôi câu đã emit bị phiên âm lại với mốc lệch. */
-  readonly tailProbe: Record<ConnKind, string>;
 }
 
 export const connOf = (gen: ConnectionGeneration, kind: ConnKind): SonioxConnection =>

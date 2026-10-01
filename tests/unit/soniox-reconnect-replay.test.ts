@@ -319,7 +319,7 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       const s = setup();
       await openImmediately(s.controller, pairKeys("k1"), s.instances);
       s.feedRange(T0, T0 + 10_000);
-      s.instances[0].handlers["token"]?.(token("図書館は閉まり", 2500, 3700, { language: "ja" }));
+      s.instances[0].handlers["token"]?.(token("図書館は午後六時に閉まり", 2500, 3700, { language: "ja" }));
       s.instances[0].handlers["token"]?.(token("ます。", 3700, 4000, { language: "ja" }));
       s.instances[0].handlers["endpoint"]?.();
       s.instances[1].handlers["token"]?.(token("src", 2500, 4000));
@@ -342,7 +342,48 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       s.instances[2].handlers["endpoint"]?.();
 
       // Assert — mảnh đuôi bị loại, câu mới vẫn qua
-      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "câu hai"]);
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "câu hai"]);
+    });
+
+    test("test_soniox_controller_gate_drops_shifted_tail_that_arrives_as_separate_tokens", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — đuôi "ます。" của câu đã emit về thành 2 token riêng (chữ + dấu câu), cả hai lệch mốc ra sau cổng; rồi câu mới
+      s.instances[2].handlers["token"]?.(token("す", 318, 378, { language: "ja" }));
+      s.instances[2].handlers["token"]?.(token("。", 378, 438, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+      s.instances[2].handlers["token"]?.(token("câu hai", 800, 1300, { language: "vi" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert — không sinh utterance rác "す。"
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "câu hai"]);
+    });
+
+    test("test_soniox_controller_gate_drops_shifted_tail_made_of_three_tokens", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — đuôi "ます。" về thành 3 token riêng ("ま" còn 2 ký tự phía sau trong câu cũ), đều lệch mốc ra sau cổng
+      s.instances[2].handlers["token"]?.(token("ま", 318, 358, { language: "ja" }));
+      s.instances[2].handlers["token"]?.(token("す", 358, 398, { language: "ja" }));
+      s.instances[2].handlers["token"]?.(token("。", 398, 438, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。"]);
+    });
+
+    test("test_soniox_controller_gate_keeps_token_that_matches_text_far_from_the_end_of_the_emitted_sentence", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — "図書館" có trong câu cũ nhưng ở ĐẦU câu (xa phần cuối) ⇒ lời mới trùng chữ, không phải đuôi bị phiên âm lại
+      s.instances[2].handlers["token"]?.(token("図書館", 318, 498, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "図書館"]);
     });
 
     test("test_soniox_controller_gate_drops_token_whose_midpoint_is_inside_the_emitted_region_even_when_its_text_differs", async () => {
@@ -356,7 +397,7 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       s.instances[2].handlers["endpoint"]?.();
 
       // Assert — bị loại theo thời gian, không cần khớp chữ
-      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "câu hai"]);
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "câu hai"]);
     });
 
     test("test_soniox_controller_gate_keeps_token_within_slack_when_its_text_does_not_match_the_emitted_tail", async () => {
@@ -368,7 +409,7 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       s.instances[2].handlers["endpoint"]?.();
 
       // Assert
-      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "はい"]);
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "はい"]);
     });
 
     test("test_soniox_controller_gate_stops_matching_text_once_a_real_token_has_passed", async () => {
@@ -381,7 +422,20 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       s.instances[2].handlers["endpoint"]?.();
 
       // Assert
-      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "はいます。"]);
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "はいます。"]);
+    });
+
+    test("test_soniox_controller_gate_is_not_opened_by_a_provisional_token_of_new_speech", async () => {
+      // Arrange
+      const s = await afterReconnectWithEmittedTail();
+
+      // Act — token provisional của lời mới (chưa final) tới trước, rồi đuôi cũ lệch mốc mới chốt final
+      s.instances[2].handlers["token"]?.(token("はい", 500, 700, { language: "ja", is_final: false }));
+      s.instances[2].handlers["token"]?.(token("ます。", 318, 498, { language: "ja" }));
+      s.instances[2].handlers["endpoint"]?.();
+
+      // Assert — provisional chỉ vẽ bubble mờ, không mở cổng nên đuôi cũ vẫn bị loại
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。"]);
     });
 
     test("test_soniox_controller_gate_ignores_repeated_provisional_tokens_when_matching_the_emitted_tail", async () => {
@@ -396,7 +450,7 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       s.instances[2].handlers["endpoint"]?.();
 
       // Assert — provisional không cộng dồn vào chữ so khớp: bản final vẫn nhận ra là đuôi đã emit
-      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。"]);
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。"]);
     });
 
     test("test_soniox_controller_gate_keeps_matching_text_that_starts_well_after_the_boundary", async () => {
@@ -408,7 +462,7 @@ describe("SonioxStreamController — reconnect replay từ mốc cuối đã emi
       s.instances[2].handlers["endpoint"]?.();
 
       // Assert
-      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は閉まります。", "ます。"]);
+      expect(s.canonical.map((x) => x.textOrig)).toEqual(["図書館は午後六時に閉まります。", "ます。"]);
     });
   });
 
